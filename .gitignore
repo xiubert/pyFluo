@@ -1,0 +1,15 @@
+# checkpoints and caches
+__pycache__/
+lib/__pycache__/
+.ipynb_checkpoints/
+
+# scratch code
+scratch/
+lib/old/
+
+#data
+# data/
+
+# venvs
+venv*/
+env*/
