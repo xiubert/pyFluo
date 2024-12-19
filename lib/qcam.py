@@ -1,9 +1,31 @@
 import numpy as np
 import re
 import matplotlib.pyplot as plt
+import glob
+import os
+from datetime import datetime
 from lib.signals import butterFilter
 
-def extract_qcamraw(filepath: str, fr: int = 20) -> tuple[np.ndarray,np.ndarray,dict]:
+def getTimeVec(nFrames: int, frameRate: int = 20, zeroStart: bool = True):
+    """
+    Generate time vector from frame count and rate.
+
+    Args:
+        nFrames (int): number of frames
+        frameRate (int): number of frames acquired per second
+        zeroStart (bool): whether first frame acquired at time 0.
+    Returns:
+        t (numpy array): vector of time values
+    """
+    # first frame acquired (1/fr) s after start
+    t = (np.arange(1, nFrames + 1) * (1 / frameRate))
+    # first frame acquired at start (starts at 0)
+    if zeroStart:
+        return t-(1/frameRate)
+    return t
+
+
+def extract_qcamraw(filepath: str) -> tuple[np.ndarray,dict]:
     """
     Extracts image data, header, and associated time vector from qcamraw file.
 
@@ -13,7 +35,6 @@ def extract_qcamraw(filepath: str, fr: int = 20) -> tuple[np.ndarray,np.ndarray,
     
     Returns:
         img (numpy array): as Y x X x time
-        t (numpy array): time vector (in s) starting at 0
         header (dict): file header metadata
     """
     # Open the file for reading in binary mode
@@ -70,13 +91,7 @@ def extract_qcamraw(filepath: str, fr: int = 20) -> tuple[np.ndarray,np.ndarray,
     img = imgvec.reshape((n_frames, img_height, img_width))
     img = np.transpose(img, (1, 2, 0))  # Reorder to [height, width, frames]
     
-    # Generate time vector
-    # first frame acquired (1/fr) s after start
-    # t = np.arange(1, n_frames + 1) * (1 / fr)
-    # first frame acquired at start (starts at 0)
-    t = (np.arange(1, n_frames + 1) * (1 / fr))-(1/fr)
-    
-    return img,t,header
+    return img,header
 
 
 def getQCamHeader(filepath: str) -> dict:
@@ -110,33 +125,95 @@ def getQCamHeader(filepath: str) -> dict:
         
     return header
 
-def calcSpatialDFFresp(img, t: np.ndarray, frameRate: int = 20,
-               baseline: tuple[int] = (2,3),
-               stimlen: float = 0.4,
-               temporalAvgFrameSpan: int = 10,
-               applyButterFilter: bool = True):
-    # spatial baseline
-    # baseline = (2,3)
-    # stimlen = 0.4 #s
-    # # average of 10 frames of spatial dff (re baseline) after stimulus ends
-    # temporalAvgFrameSpan = 10
+def calcSpatialDFFresp(img: np.ndarray, t: np.ndarray, 
+                        frameRate: int = 20,
+                        t_baseline: tuple[int] = (2,3),
+                        stimlen: float = 0.4,
+                        t_temporalAvg: tuple[float] = None,
+                        temporalAvgFrameSpan: int = 10,
+                        butterFilterParams: dict = {}):
 
     # Reshape to 2D: (number of pixels, time points)
     reshaped_data = img.reshape(-1,200)
-    baselineIDX = np.where((t>=baseline[0]) & (t<=baseline[1]))[0]
+    baselineIDX = np.where((t>=t_baseline[0]) & (t<=t_baseline[1]))[0]
     spatialbase = reshaped_data[:,baselineIDX].mean(axis=1).reshape(-1,1)
     spatialDFF = (reshaped_data-spatialbase)/spatialbase
-    if applyButterFilter:
-        spatialDFF = butterFilter(spatialDFF)
+    
+    if butterFilterParams and isinstance(butterFilterParams,dict):
+        spatialDFF = butterFilter(spatialDFF,**butterFilterParams)
 
-    # _, ax = plt.subplots()
+    if t_temporalAvg is None:
+        t_temporalAvg = (t_baseline[1]+stimlen,t_baseline[1]+stimlen+temporalAvgFrameSpan*(1/frameRate))
 
-    # plt.imshow(spatialDFF[:,np.where((t>=baseline[1]+stimlen) &
-    #                                     (t<=baseline[1]+stimlen+temporalAvgFrameSpan*(1/frameRate)))[0]]\
-    #                                         .mean(axis=1).reshape(*img.shape[:2]))
-    # plt.show()
-    spatialDFFresp = spatialDFF[:,np.where((t>=baseline[1]+stimlen) &
-                                        (t<=baseline[1]+stimlen+temporalAvgFrameSpan*(1/frameRate)))[0]]\
+    spatialDFFresp = spatialDFF[:,np.where((t>=t_temporalAvg[0]) &
+                                        (t<=t_temporalAvg[1]))[0]]\
                                             .mean(axis=1).reshape(*img.shape[:2])
 
     return spatialDFFresp
+
+
+def plotAvgImg(img):
+    ax = plt.imshow(img.mean(axis=2))
+
+    return ax
+
+
+def plotTraceAvgImg(t,img,cutoff_freq: float = 3):
+    signal = np.reshape(img,(np.prod(img.shape[:2]),img.shape[2])).mean(axis=0)
+    X = np.vstack([t, np.ones(len(t))]).T
+    slope,intercept = np.linalg.lstsq(X,signal, rcond=None)[0]
+    fig,ax = plt.subplots(3,1)
+    ax[0].plot(t,signal)
+    ax[0].set_title('raw trace with least-sq reg. fit')
+    ax[0].plot(t,t*slope+intercept,'r')
+    ax[1].plot(t,signal-(t*slope+intercept))
+    ax[1].set_title('trace minus fit')
+    ax[2].plot(t,butterFilter(signal-(t*slope+intercept),cutoff_freq=cutoff_freq))
+    ax[2].set_title('filtered trace minus fit')
+
+    return fig,ax
+
+
+def getAllImgs(qFiles: list):
+    imgs,headers = [],[]
+    for q in qFiles:
+        img,header = extract_qcamraw(q)
+        imgs.append(img)
+        headers.append(header)
+
+    # exclude files where framecount is not most common
+    nFrames = [i.shape[2] for i in imgs]
+    nFrames = max(nFrames, key=nFrames.count)
+    imgs,headers = zip(*[(i,h) for i,h in zip(imgs,headers) if i.shape[2]==nFrames])
+
+    return imgs,headers
+
+
+def experimentAvgPlot(dPath: str = None, qFiles: list = None):
+    if qFiles is None:
+        qFiles = glob.glob(os.path.join(dPath,'*.qcamraw'))
+
+    imgs,headers = getAllImgs(qFiles)
+    t = getTimeVec(imgs[0].shape[2],zeroStart=False)
+    timeStamps = [h['File_Init_Timestamp'] for h in headers]
+    timeStamps = [datetime.strptime(date, '%m-%d-%Y_%H:%M:%S') for date in timeStamps]
+
+    fig,ax = plt.subplots(3,1,figsize=(12,10))
+    ax[0].plot(t,butterFilter(np.array(imgs).mean(axis=(0,1,2))))
+    ax[0].set_ylabel('raw F')
+    ax[0].set_xlabel('t (s)')
+    ax[0].set_xticks(np.arange(0,int(max(t))+1))
+
+    ax[1].imshow(calcSpatialDFFresp(np.array(imgs).mean(axis=0).reshape(*imgs[0].shape),
+                               t,stimlen=0.1, temporalAvgFrameSpan=8))
+
+    ax[2].plot(timeStamps,np.array(imgs).mean(axis=(1,2,3)),'.')
+    ax[2].set_ylabel('raw F')
+    # Format the x-axis to show readable datetime labels
+    # ax[1].gcf().autofmt_xdate()
+    if dPath is None:
+        fig.suptitle(os.path.dirname(qFiles[0]))
+    else:
+        fig.suptitle(dPath)
+
+    fig.show()
