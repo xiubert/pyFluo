@@ -19,6 +19,9 @@
 1. First run `src/getEdgeROI.py` to obtain the mask for isolating the blood vessel portion which will be analyzed for movement
 2. Run: `src/FandXY_reSoundStim.ipynb`
 
+## For exploring effects of experiment duration on fluorescence traces
+- Notebook: `src/F_exprmnt_duration.ipynb`
+
 ## Example exploratory data analysis on a single experiment
 - Notebook: `src/single_experiment_EDA.ipynb`
 
