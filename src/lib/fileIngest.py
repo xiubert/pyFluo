@@ -201,9 +201,9 @@ def loadQCamTable(df: pd.DataFrame) -> tuple[pd.DataFrame,dict,dict]:
         qcam2img[b.qcam],qcam2header[b.qcam] = extract_qcamraw(b.qcam)
         _,_,x,y = map(int,qcam2header[b.qcam]['ROI'].replace(' ','').split(','))
 
-        timeStamps.append((b.qcam,qcam2header[b.qcam]['File_Init_Timestamp'],(y,x)))
+        timeStamps.append((b.qcam,qcam2img[b.qcam].shape[2],qcam2header[b.qcam]['File_Init_Timestamp'],(y,x)))
 
-    df = df.merge(pd.DataFrame(timeStamps,columns=['qcam','timestamp_init','dim_YX']),on='qcam')
+    df = df.merge(pd.DataFrame(timeStamps,columns=['qcam','nFrames','timestamp_init','dim_YX']),on='qcam')
 
     return df,qcam2img,qcam2header
     
