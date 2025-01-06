@@ -204,6 +204,7 @@ def loadQCamTable(df: pd.DataFrame) -> tuple[pd.DataFrame,dict,dict]:
         timeStamps.append((b.qcam,qcam2img[b.qcam].shape[2],qcam2header[b.qcam]['File_Init_Timestamp'],(y,x)))
 
     df = df.merge(pd.DataFrame(timeStamps,columns=['qcam','nFrames','timestamp_init','dim_YX']),on='qcam')
+    df['timestamp_init'] = pd.to_datetime(df['timestamp_init'], format='%m-%d-%Y_%H:%M:%S')
 
     return df,qcam2img,qcam2header
     
