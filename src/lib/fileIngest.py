@@ -165,7 +165,7 @@ def qcams2imgs(qFiles: list, consistentFrameCt: bool = True) -> tuple[list[np.nd
     return imgs,headers
 
 
-def qcamPath2table(exprmntPaths: list[str]) -> pd.DataFrame:
+def qcamPath2table(exprmntPaths: list[str], format: str = 'MAK') -> pd.DataFrame:
     """
     Takes list of experiment directories and returns table of qcam files to xsg and pulse metadata.
     """
@@ -185,7 +185,7 @@ def qcamPath2table(exprmntPaths: list[str]) -> pd.DataFrame:
 
     # assume relevant pulse is first
     df['pulse'] = df['xsg'].apply(lambda x: metadataProcess.getPulseNames(x)[0])
-    df['dB'] = df['pulse'].apply(metadataProcess.getPulseDB)
+    df['dB'] = df['pulse'].apply(lambda x: metadataProcess.getPulseDB(x,format=format))
 
     return df
 
