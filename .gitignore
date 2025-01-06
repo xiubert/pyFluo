@@ -9,6 +9,7 @@ __pycache__/
 scratch/
 /src/lib/old/
 /src/scratch
+/src/scratch_*
 
 #data
 # data/

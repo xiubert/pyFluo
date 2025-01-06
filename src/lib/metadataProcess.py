@@ -18,4 +18,7 @@ def getPulseSets(xsgPath: str):
 
 def getPulseDB(pulse: str):
     dBre = re.compile(r'_(\d{2,3})dB_\d{2,5}msTotal_')
-    return re.search(dBre,pulse).group(1)
+    try:
+        return re.search(dBre,pulse).group(1)
+    except AttributeError:
+        return None

@@ -1,5 +1,11 @@
 import numpy as np
 import re
+import pandas as pd
+from glob import glob
+import os
+
+import lib.metadataProcess as metadataProcess
+
 
 """
 Functions for importing raw data from imaging data files.
@@ -131,16 +137,73 @@ def getQCamHeader(filepath: str) -> dict:
     return header
 
 
-def qcams2imgs(qFiles: list):
+def qcams2imgs(qFiles: list, consistentFrameCt: bool = True) -> tuple[list[np.ndarray],list[dict]]:
+    """
+    Helper to extract image data from list of qcamraw files. 
+    Limits output to captures with most consistent frame count among files.
+
+    Args:
+        qFiles (list): list of qcamraw file paths to be imported.
+        consistentFrameCt (bool): whether to limit captures to files with most consistent frame count.
+
+    Returns:
+        imgs (list of numpy arrays): list of image arrays
+        headers (list of dicts): list of associated file headers
+    """
     imgs,headers = [],[]
     for q in qFiles:
         img,header = extract_qcamraw(q)
         imgs.append(img)
         headers.append(header)
 
-    # exclude files where framecount is not most common
-    nFrames = [i.shape[2] for i in imgs]
-    nFrames = max(nFrames, key=nFrames.count)
-    imgs,headers = zip(*[(i,h) for i,h in zip(imgs,headers) if i.shape[2]==nFrames])
+    if consistentFrameCt:
+        # exclude files where framecount is not most common
+        nFrames = [i.shape[2] for i in imgs]
+        nFrames = max(nFrames, key=nFrames.count)
+        imgs,headers = zip(*[(i,h) for i,h in zip(imgs,headers) if i.shape[2]==nFrames])
 
     return imgs,headers
+
+
+def qcamPath2table(exprmntPaths: list[str]) -> pd.DataFrame:
+    """
+    Takes list of experiment directories and returns table of qcam files to xsg and pulse metadata.
+    """
+    qcams = []
+    dirs = []
+
+    for p in exprmntPaths:
+        qpaths = glob(os.path.join(p,'*.qcamraw'))
+        qcams.extend(qpaths)
+        dirs.extend([p]*len(qpaths))
+
+    df = pd.DataFrame(zip(qcams,dirs),columns=['qcam','dir'])
+
+    # assume 1:1 mapping of qcamraw to XSG
+    df['xsg'] = df['qcam'].apply(lambda x: x.replace('.qcamraw','.xsg') if os.path.exists(x.replace('.qcamraw','.xsg')) else None)
+    df = df.dropna()
+
+    # assume relevant pulse is first
+    df['pulse'] = df['xsg'].apply(lambda x: metadataProcess.getPulseNames(x)[0])
+    df['dB'] = df['pulse'].apply(metadataProcess.getPulseDB)
+
+    return df
+
+
+def loadQCamTable(df: pd.DataFrame) -> tuple[pd.DataFrame,dict,dict]:
+    """
+    Returns df with tile instantiation time and 
+    dicts of qcam image data and headers provided qcam metadata table.
+    """
+    qcam2img,qcam2header = {},{}
+    timeStamps = []
+    for _,b in df.iterrows():
+        qcam2img[b.qcam],qcam2header[b.qcam] = extract_qcamraw(b.qcam)
+        _,_,x,y = map(int,qcam2header[b.qcam]['ROI'].replace(' ','').split(','))
+
+        timeStamps.append((b.qcam,qcam2header[b.qcam]['File_Init_Timestamp'],(y,x)))
+
+    df = df.merge(pd.DataFrame(timeStamps,columns=['qcam','timestamp_init','dim_YX']),on='qcam')
+
+    return df,qcam2img,qcam2header
+    
