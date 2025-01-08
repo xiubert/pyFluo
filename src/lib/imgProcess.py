@@ -1,13 +1,20 @@
 import numpy as np
 import cv2
+import matplotlib.pyplot as plt
+from roipoly import RoiPoly
+import joblib
+import os
+from glob import glob
 
 from lib.signalProcess import butterFilter
+from lib.fileIngest import extract_qcamraw, getTimeVec, qcams2imgs
+
 
 """
 Functions for processing imaging signals.
 """
 
-def calcSpatialDFFresp(img: np.ndarray, t: np.ndarray, 
+def calcSpatialDFFresp(imgSeries: np.ndarray, t: np.ndarray, 
                         frameRate: int = 20,
                         t_baseline: tuple[int] = (2,3),
                         stimlen: float = 0.4,
@@ -19,7 +26,7 @@ def calcSpatialDFFresp(img: np.ndarray, t: np.ndarray,
     """
 
     # Reshape to 2D: (number of pixels, time points)
-    reshaped_data = img.reshape(-1,200)
+    reshaped_data = imgSeries.reshape(-1,200)
     baselineIDX = np.where((t>=t_baseline[0]) & (t<=t_baseline[1]))[0]
     spatialbase = reshaped_data[:,baselineIDX].mean(axis=1).reshape(-1,1)
     spatialDFF = (reshaped_data-spatialbase)/spatialbase
@@ -32,7 +39,7 @@ def calcSpatialDFFresp(img: np.ndarray, t: np.ndarray,
 
     spatialDFFresp = spatialDFF[:,np.where((t>=t_temporalAvg[0]) &
                                         (t<=t_temporalAvg[1]))[0]]\
-                                            .mean(axis=1).reshape(*img.shape[:2])
+                                            .mean(axis=1).reshape(*imgSeries.shape[:2])
 
     return spatialDFFresp
 
@@ -110,7 +117,97 @@ def getEdgeXYdisp(imgSeries,mask,frameDiff):
     return Xdisp, Ydisp, meanX, medianX, meanY, medianY
 
 
+def getROImask(imgPath: str = None,
+               qcamFiles: list = None, 
+               processEdges: bool = False, processResponse: bool = False,
+               saveMask: bool = True, **kwargs) -> np.ndarray:
+    """
+    Captures ROI mask via user drawn polygon.
+    """
+    if qcamFiles is not None:
+        imgs = qcams2imgs(qcamFiles)[0]
+        # take average across files
+        imgSeries = np.array(imgs).mean(axis=0)
+        # then avg across time
+        img = imgSeries.mean(axis=2)
+        savePath = ''
+        saveMask=False
+    
+    else:
+        if ".qcamraw" in imgPath and os.path.exists(imgPath):
+            print("Showing temporal average of single qcamraw file for drawing ROI")
+            imgSeries = extract_qcamraw(imgPath)[0]
+            # take average across time
+            img = imgSeries.mean(axis=2)
+            savePath = imgPath.replace('.qcamraw','_mask.joblib')
 
+        elif os.path.exists(imgPath):
+            print("Showing temporal average of all .qcamraw files in directory for drawing ROI")
+            qFiles = glob(os.path.join(imgPath,'*.qcamraw'))
+            if len(qFiles)<1:
+                ValueError("No .qcamraw files found in directory")
+            imgs = qcams2imgs(qFiles)[0]
+            # take average across files
+            imgSeries = np.array(imgs).mean(axis=0)
+            # then avg across time
+            img = imgSeries.mean(axis=2)
+            savePath = os.path.join(imgPath,'avgImg_mask.joblib')
+            
+        else:
+            raise ValueError("Path does not exist")
+    
+    if not (processEdges ^ processResponse):
+        return ValueError("Only one of processEdges or processResponse may be true")
+    
+    if processEdges:
+        savePath = savePath.replace('_mask','_edge_mask')
+        #Process frame for edges and visualize
+        imgEdge = getImgEdges(img)
+        plt.imshow(imgEdge+img*0.3, cmap='gray')
+
+    elif processResponse:
+        savePath = savePath.replace('_mask','_response_mask')
+        t = getTimeVec(imgSeries.shape[2])
+
+        # eventually use kwargs for calcSpatialDFFresp params
+        spatialRespImg = calcSpatialDFFresp(imgSeries,
+                        t, stimlen=0.1, temporalAvgFrameSpan=8)
+        plt.imshow(spatialRespImg)
+    else:
+        # Display image
+        plt.imshow(img, cmap='gray')
+
+    # Prompt to draw a polygonal ROI
+    print("Draw polygon... Double click to finish")
+    roi = RoiPoly(color='r')
+
+    # Get ROI mask
+    mask = roi.get_mask((imgEdge if processEdges else img))
+    
+    if saveMask:
+        if os.path.exists(savePath):
+            mask_files = glob(savePath.replace('mask.joblib','mask*'))
+            os.rename(savePath,savePath.replace('.joblib',f"_{len(mask_files):03}.joblib"))
+
+        # save where image is saved
+        joblib.dump(mask,savePath)
+
+    # Display the ROI
+    if processEdges:
+        plt.imshow((img*.3+imgEdge)*(mask+0.6), cmap='gray')
+        plt.show()
+
+    if processResponse:
+        _, ax = plt.subplots(1, 2, figsize=(12,6))
+        ax[0].imshow(img, cmap='gray')
+        ax[1].imshow(spatialRespImg*(mask+0.5), cmap='viridis')
+        plt.show()
+        
+    else:
+        plt.imshow(img*(mask+0.6), cmap='gray')
+        plt.show()
+
+    return mask,imgSeries
 
 
 
