@@ -13,7 +13,7 @@ scratch/
 /src/scratch_*
 
 #data
-data/
+# data/
 
 # venvs
 venv*/
