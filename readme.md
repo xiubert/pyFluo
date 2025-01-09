@@ -14,6 +14,9 @@
 ## For organizing metadata of multiple experiment directories
 - Notebook: `src/getExprmntMetadata.ipynb`
 
+## For plotting mean fluorescence within selectable ROI across traces
+- Notebook: `src/getROI_fluoResp.ipynb`
+
 ## For relating blood vessel movement with fluorescence responses
 - Notebook: `src/FandXY_reSoundStim.ipynb`
 1. First run `src/getEdgeROI.py` to obtain the mask for isolating the blood vessel portion which will be analyzed for movement
