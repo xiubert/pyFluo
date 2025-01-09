@@ -14,6 +14,8 @@ scratch/
 
 #data
 # data/
+data/*/*.joblib
+data/*.joblib
 
 # venvs
 venv*/
