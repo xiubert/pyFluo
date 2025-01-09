@@ -6,6 +6,11 @@ import joblib
 import os
 from glob import glob
 
+from holoviews import opts, streams
+import holoviews as hv
+import panel as pn
+from matplotlib.path import Path
+
 from lib.signalProcess import butterFilter
 from lib.fileIngest import extract_qcamraw, getTimeVec, qcams2imgs
 
@@ -115,6 +120,138 @@ def getEdgeXYdisp(imgSeries,mask,frameDiff):
     medianY,meanY = muY[:,0],muY[:,1]
 
     return Xdisp, Ydisp, meanX, medianX, meanY, medianY
+
+
+def getROImaskUI(image: np.ndarray, show_mask: bool = True):
+    """
+    Creates an interactive interface for drawing a polygon ROI on an image and generates a binary mask.
+    
+    Parameters:
+        image (numpy.ndarray): Input image array for visualization and mask generation.
+
+    Returns:
+        A Panel layout with the interactive interface and the mask as output.
+    """
+    # for running in jupyter notebook
+    pn.extension()
+    hv.extension('bokeh')
+    def polygon2mask(points, image_shape):
+        """Create a binary mask from polygon coordinates."""
+        mask = np.zeros(image_shape, dtype=bool)
+
+        # Create a mesh grid of image coordinates
+        y, x = np.mgrid[:image_shape[0], :image_shape[1]]
+
+        # Combine coordinates into a flattened (N, 2) array
+        coords = np.vstack((x.ravel(), y.ravel())).T
+
+        # Create path object
+        path = Path(points)
+
+        # Check which points are inside the polygon
+        mask_flat = path.contains_points(coords)
+        mask = mask_flat.reshape(image_shape)
+
+        return mask
+
+    # Initialize Holoviews objects
+    image_hv = hv.Image(image, bounds=(0, 0, image.shape[1], image.shape[0])).opts(
+        width=image.shape[1] * 3, 
+        height=image.shape[0] * 3,
+        cmap='viridis',
+    )
+
+    poly = hv.Polygons([])
+    poly_stream = streams.PolyDraw(source=poly, drag=True, num_objects=1, show_vertices=True)
+
+    # Create dynamic polygon element
+    dmap = hv.DynamicMap(lambda data: poly.clone(data), streams=[poly_stream])
+
+    plot = (image_hv * poly).opts(
+        opts.Polygons(fill_alpha=0.3, active_tools=['poly_draw'])
+    )
+
+    # Create button to get polygon coordinates and generate mask
+    mask_output = {'mask': None}  # To store the generated mask
+    output_pane = pn.pane.Matplotlib(height=300)  # To display the mask
+
+    def get_coords(event):
+        if poly_stream.data:
+            
+            coords = poly_stream.data
+            # Convert coordinates to points format
+            points = list(zip(coords['xs'][0], coords['ys'][0]))  # Assumes one polygon
+           
+
+            # Create and display mask
+            mask = polygon2mask(points, image.shape)
+            
+            # debug
+            # print("Poly Stream Data:", poly_stream.data)
+            # print("Extracted Points:", points)
+            # print("Mask Created: Shape:", mask.shape, "Sum of Mask:", mask.sum())
+
+            # Flip the mask vertically for correct display with matplotlib
+            mask_flipped = np.flipud(mask)
+            mask_output['mask'] = mask_flipped  # Store the mask in the result dictionary
+
+            # Visualize
+            if show_mask:
+                # plt.close('all')
+                # plt.figure()
+                # plt.imshow(mask_flipped, cmap='gray')
+                # plt.title('ROI Mask')
+                # plt.xlabel('X')
+                # plt.ylabel('Y')
+                # plt.show()
+                fig, ax = plt.subplots()
+                ax.imshow(mask_flipped, cmap='gray')
+                plt.close(fig)
+                ax.set_title("ROI Mask")
+                output_pane.object = fig  # Update the output pane with the new plot
+
+
+    button = pn.widgets.Button(name='Get ROI mask', button_type='primary')
+    button.on_click(get_coords)
+
+    # Return the Panel layout and allow access to the mask
+    # return pn.Column(plot, button), mask_output
+    return pn.Column(plot, button, output_pane), mask_output
+
+
+
+def qcams2roiTrace(qcams: list):
+    """
+    Takes list of qcam paths and returns UI for drawing ROI
+    """
+    imgs,_ = qcams2imgs(qcams)
+    avgImgSeries = np.array(imgs).mean(axis=(0))
+    t = getTimeVec(imgs[0].shape[2])
+    spatialDFF = calcSpatialDFFresp(avgImgSeries,t)
+    ui, mask_output = getROImaskUI(spatialDFF)
+
+    return ui, mask_output, np.array(imgs), spatialDFF, t
+
+
+def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF, t):
+    """
+    Applies mask to array of images of shape [trace, Y, X, frame]
+    and returns average rawF within ROI across frames in array of shape [trace, frame]
+    """
+    ROItrace = imgs[:,mask==1,:].mean(axis=1)
+    fig,ax = plt.subplots(2,2,figsize=(12,6))
+    ax[0,0].imshow(imgs.mean(axis=(0,3)),cmap='gray')
+    ax[0,1].imshow(spatialDFF*(mask+.8),cmap='viridis')
+    ax[1,0].plot(t,imgs.mean(axis=(0,1,2)))
+    ax[1,0].set_title('full img')
+    ax[1,0].set_xlabel('time (s)')
+    ax[1,1].plot(t,ROItrace.mean(axis=(0)))
+    ax[1,1].set_title('roi')
+    ax[1,1].set_xlabel('time (s)')
+
+    fig.show()
+
+    return ROItrace
 
 
 def getROImask(imgPath: str = None,
