@@ -4,7 +4,8 @@ import numpy as np
 def butterFilter(signal: np.ndarray, 
                  sample_freq: int = 20, 
                  cutoff_freq: int = 5, 
-                 order: int = 4) -> np.ndarray:
+                 order: int = 4,
+                 **kwargs) -> np.ndarray:
     """
     Simple helper function for a lowpass butterworth filter.
 
@@ -13,11 +14,16 @@ def butterFilter(signal: np.ndarray,
         sampleFreq (int): sampling frequency of the signal
         cutoff_freq: filter cutoff frequency
         order: filter order ('steepness' of signal drop-off at cutoff_freq)
+        **kwargs: Additional arguments for flexibility
 
     Returns:
         filtered_signal (numpy array): lowpass filtered signal
 
     """
+    # Optionally override parameters using kwargs
+    sample_freq = kwargs.get('sample_freq', sample_freq)
+    cutoff_freq = kwargs.get('cutoff_freq', cutoff_freq)
+
     b, a = butter(order, cutoff_freq/(sample_freq/2), 'lowpass') 
 
     return filtfilt(b,a,signal)
@@ -43,7 +49,8 @@ def subtractLinFit(t,signal: np.ndarray) -> np.ndarray:
 
 def getBaseResp(signal: np.ndarray, t: np.ndarray, 
                 t_base: tuple[float,float] = (2.2,2.9),
-                t_resp: tuple[float,float] = (3.0,3.15)) -> tuple[float,float]:
+                t_resp: tuple[float,float] = (3.0,3.15),
+                **kwargs) -> tuple[float,float]:
         """
         Extract average signal at t_base and max signal between t_resp.
 
@@ -52,11 +59,15 @@ def getBaseResp(signal: np.ndarray, t: np.ndarray,
             t (list or array): time vector (in seconds)
             t_base: time window (in seconds) for baseline
             t_resp: time window (in seconds) for response
+            **kwargs: Additional arguments for flexibility
 
         Returns:
             base (float): average signal between t_base
             resp (float): max signal between t_resp
         """
+        # Optionally override parameters using kwargs
+        t_base = kwargs.get('t_base',t_base)
+        t_resp = kwargs.get('t_resp',t_resp)
 
         base = signal[np.where((t>=t_base[0]) & (t<=t_base[1]))].mean()
         resp = np.max(signal[np.where((t>=t_resp[0]) & (t<=t_resp[1]))])
@@ -64,27 +75,45 @@ def getBaseResp(signal: np.ndarray, t: np.ndarray,
         return base,resp
 
 
-def pkDFF(img,t,
+def pkDFF(imgSeries: np.ndarray, t,
           subLinFit: bool = True, 
           butterFilt: bool = True, 
           **kwargs):
-
-    signal = img.mean(axis=(0,1))
+    """
+    Calculates peak dFF response from image series array.
     
+    Args:
+        imgSeries (array): array of shape (Y, X, frame)
+        subLinFit (bool): whether to subtract fitted line
+        butterFilt (bool): whether to apply low pass filter
+    Returns:
+        pk (float): absolute peak of dFF response
+    """
+
+    ROImask = kwargs.get('ROImask',None)
+    if ROImask is None:
+        signal = imgSeries.mean(axis=(0,1))
+    else:
+        signal = imgSeries[ROImask==1,:].mean(axis=0)
+    
+    # whether to subtract fitted line
     if subLinFit:
         signal = subtractLinFit(t,signal)[0]
 
+    # whether to apply low pass filter
     if butterFilt:
-        if 'cutoff_freq' not in kwargs:
-            cutoff_freq = 4
-        else:
-            cutoff_freq = kwargs['cutoff_freq']
-        signal = butterFilter(signal, cutoff_freq = cutoff_freq)
+        # cutoff_freq = kwargs.get('cutoff_freq', 4)  # Default cutoff_freq = 4
+        # signal = butterFilter(signal, cutoff_freq=cutoff_freq)
+        signal = butterFilter(signal, **kwargs)
     
-    f0 = getBaseResp(signal,t)[0]
+    # baseline (f0) to be subtracted
+    f0 = getBaseResp(signal, t, **kwargs)[0]
     
+    # calculate dFF
     dFF = (signal-f0)/f0
-    pkBase,pkResp = getBaseResp(dFF,t)
+
+    # get baseline and peak from dFF
+    pkBase,pkResp = getBaseResp(dFF, t, **kwargs)
 
     # gets response in either direction
     pk = abs(pkResp-pkBase)
