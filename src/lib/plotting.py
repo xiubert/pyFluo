@@ -3,9 +3,8 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 import os
 
-from lib.signalProcess import butterFilter
+from lib.signalProcess import butterFilter, getTimeVec
 from lib.fileIngest import qcams2imgs
-from lib.fileIngest import getTimeVec
 from lib.imgProcess import calcSpatialDFFresp
 
 
@@ -54,7 +53,7 @@ def experimentAvgPlot(dPath: str = None, qFiles: list = None,
     ax[0].set_xticks(np.arange(0,int(max(t))+1))
 
     ax[1].imshow(calcSpatialDFFresp(np.array(imgs).mean(axis=0).reshape(*imgs[0].shape),
-                               t,stimlen=0.1, temporalAvgFrameSpan=8))
+                               stimlen=0.1, temporalAvgFrameSpan=8))
 
 
     # Format the x-axis to show readable datetime labels

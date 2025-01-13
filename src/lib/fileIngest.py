@@ -11,25 +11,6 @@ import lib.metadataProcess as metadataProcess
 Functions for importing raw data from imaging data files.
 """
 
-def getTimeVec(nFrames: int, frameRate: int = 20, zeroStart: bool = True):
-    """
-    Generate time vector from frame count and rate.
-
-    Args:
-        nFrames (int): number of frames
-        frameRate (int): number of frames acquired per second
-        zeroStart (bool): whether first frame acquired at time 0.
-    Returns:
-        t (numpy array): vector of time values
-    """
-    # first frame acquired (1/fr) s after start
-    t = (np.arange(1, nFrames + 1) * (1 / frameRate))
-    # first frame acquired at start (starts at 0)
-    if zeroStart:
-        return t-(1/frameRate)
-    return t
-
-
 def extract_qcamraw(filepath: str) -> tuple[np.ndarray,dict]:
     """
     Extracts image data, header, and associated time vector from qcamraw file.

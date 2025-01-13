@@ -8,24 +8,24 @@
     - Windows: double click `env/bin/activate.bat`
 4. Install dependencies: `pip install -r requirements.txt`
 
-## For quick overview of experiment average raw fluorescence
+## Quick overview of experiment average raw fluorescence
 - Notebook: `src/avgExperiment.ipynb`
 
-## For organizing metadata of multiple experiment directories
+## Organizing metadata of multiple experiment directories
 - Notebook: `src/getExprmntMetadata.ipynb`
 
-## For plotting mean fluorescence within selectable ROI across traces
+## Plotting mean fluorescence within selectable ROI across traces
 - Notebook: `src/getROI_fluoResp.ipynb`
 
-## For relating blood vessel movement with fluorescence responses
+## Relating blood vessel movement with fluorescence responses
 - Notebook: `src/FandXY_reSoundStim.ipynb`
 
-## For exploring effects of experiment duration on fluorescence traces
+## Exploring effects of experiment duration on fluorescence traces
 - Notebook: `src/F_exprmnt_duration.ipynb`
 
 ## Example exploratory data analysis on a single experiment
 - Notebook: `src/single_experiment_EDA.ipynb`
 
-## For considering less biased approaches to selecting response areas / ROIS
+## Considering less biased approaches to selecting response areas / ROIs
 - Notebook: `src/unbiasedROI.ipynb`
 

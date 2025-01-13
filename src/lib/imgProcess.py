@@ -11,24 +11,37 @@ import holoviews as hv
 import panel as pn
 from matplotlib.path import Path
 
-from lib.signalProcess import butterFilter
-from lib.fileIngest import extract_qcamraw, getTimeVec, qcams2imgs
+from lib.signalProcess import butterFilter, getTimeVec
+from lib.fileIngest import extract_qcamraw, qcams2imgs
 
 
 """
 Functions for processing imaging signals.
 """
 
-def calcSpatialDFFresp(imgSeries: np.ndarray, t: np.ndarray, 
+def calcSpatialDFFresp(imgSeries: np.ndarray, 
                         frameRate: int = 20,
-                        t_baseline: tuple[int] = (2,3),
+                        t_baseline: tuple[float,float] = (2,3),
                         stimlen: float = 0.4,
-                        t_temporalAvg: tuple[float] = None,
+                        t_temporalAvg: tuple[float,float] = None,
                         temporalAvgFrameSpan: int = 10,
-                        butterFilterParams: dict = {}) -> np.ndarray:
+                        **kwargs) -> np.ndarray:
     """
     Calculate spatial dFF (dFF at each pixel).
+
+    Args:
+        imgSeries (array): array of shape (Y, X, frame). assumed to be grayscale.
+        frameRate (int): frame rate of imgSeries
+        t_baseline (tuple): start and end time points (inclusive) of desired dFF baseline
+        stimlen (float): length of stimulus (in seconds)
+        t_temporalAvg (tuple): start and end time points (inclusive) between which to calculate average of spatialDFF
+        temporalAvgFrameSpan (int): number of frames after stimulation for which spatialDFF average is computed
+
+   Returns:
+        spatialDFFresp (numpy array): edge pixels take the value 255
     """
+    # get time array
+    t = getTimeVec(imgSeries.shape[2], frameRate=frameRate)
 
     # Reshape to 2D: (number of pixels, time points)
     reshaped_data = imgSeries.reshape(-1,200)
@@ -36,8 +49,7 @@ def calcSpatialDFFresp(imgSeries: np.ndarray, t: np.ndarray,
     spatialbase = reshaped_data[:,baselineIDX].mean(axis=1).reshape(-1,1)
     spatialDFF = (reshaped_data-spatialbase)/spatialbase
     
-    if butterFilterParams and isinstance(butterFilterParams,dict):
-        spatialDFF = butterFilter(spatialDFF,**butterFilterParams)
+    spatialDFF = butterFilter(spatialDFF,**kwargs)
 
     if t_temporalAvg is None:
         t_temporalAvg = (t_baseline[1]+stimlen,t_baseline[1]+stimlen+temporalAvgFrameSpan*(1/frameRate))
@@ -226,18 +238,19 @@ def qcams2roiTrace(qcams: list):
     """
     imgs,_ = qcams2imgs(qcams)
     avgImgSeries = np.array(imgs).mean(axis=(0))
-    t = getTimeVec(imgs[0].shape[2])
-    spatialDFF = calcSpatialDFFresp(avgImgSeries,t)
+    
+    spatialDFF = calcSpatialDFFresp(avgImgSeries)
     ui, mask_output = getROImaskUI(spatialDFF)
 
-    return ui, mask_output, np.array(imgs), spatialDFF, t
+    return ui, mask_output, np.array(imgs), spatialDFF
 
 
-def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF, t):
+def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF):
     """
     Applies mask to array of images of shape [trace, Y, X, frame]
     and returns average rawF within ROI across frames in array of shape [trace, frame]
     """
+    t = getTimeVec(imgs.shape[-1])
     ROItrace = imgs[:,mask==1,:].mean(axis=1)
     fig,ax = plt.subplots(2,2,figsize=(12,6))
     ax[0,0].imshow(imgs.mean(axis=(0,3)),cmap='gray')
@@ -260,6 +273,8 @@ def getROImask(imgPath: str = None,
                saveMask: bool = True, **kwargs) -> np.ndarray:
     """
     Captures ROI mask via user drawn polygon.
+
+    **DEPRECATED** does not work in jupyter notebook.
     """
     if qcamFiles is not None:
         imgs = qcams2imgs(qcamFiles)[0]
@@ -308,7 +323,7 @@ def getROImask(imgPath: str = None,
 
         # eventually use kwargs for calcSpatialDFFresp params
         spatialRespImg = calcSpatialDFFresp(imgSeries,
-                        t, stimlen=0.1, temporalAvgFrameSpan=8)
+                            stimlen=0.1, temporalAvgFrameSpan=8)
         plt.imshow(spatialRespImg)
     else:
         # Display image
