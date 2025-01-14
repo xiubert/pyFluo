@@ -30,7 +30,6 @@ def calcSpatialDFFresp(imgSeries: np.ndarray,
 
     Args:
         imgSeries (array): array of shape (Y, X, frame). assumed to be grayscale.
-        frameRate (int): frame rate of imgSeries
         t_baseline (tuple): start and end time points (inclusive) of desired dFF baseline
         stimlen (float): length of stimulus (in seconds)
         t_temporalAvg (tuple): start and end time points (inclusive) between which to calculate average of spatialDFF
@@ -51,6 +50,7 @@ def calcSpatialDFFresp(imgSeries: np.ndarray,
     spatialDFF = butterFilter(spatialDFF,**kwargs)
 
     if t_temporalAvg is None:
+        frameRate = kwargs.get('frameRate', 20)
         t_temporalAvg = (t_baseline[1]+stimlen,t_baseline[1]+stimlen+temporalAvgFrameSpan*(1/frameRate))
 
     spatialDFFresp = spatialDFF[:,np.where((t>=t_temporalAvg[0]) &
