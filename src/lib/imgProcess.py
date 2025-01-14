@@ -20,7 +20,6 @@ Functions for processing imaging signals.
 """
 
 def calcSpatialDFFresp(imgSeries: np.ndarray, 
-                        frameRate: int = 20,
                         t_baseline: tuple[float,float] = (2,3),
                         stimlen: float = 0.4,
                         t_temporalAvg: tuple[float,float] = None,
@@ -41,7 +40,7 @@ def calcSpatialDFFresp(imgSeries: np.ndarray,
         spatialDFFresp (numpy array): edge pixels take the value 255
     """
     # get time array
-    t = getTimeVec(imgSeries.shape[2], frameRate=frameRate)
+    t = getTimeVec(imgSeries.shape[2], **kwargs)
 
     # Reshape to 2D: (number of pixels, time points)
     reshaped_data = imgSeries.reshape(-1,200)
