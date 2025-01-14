@@ -84,50 +84,61 @@ def getBaseResp(signal: np.ndarray, t: np.ndarray,
         Extract average signal at t_base and max signal between t_resp.
 
         Args:
-            signal (numpy array): signal array
+            signal (numpy array): signal array of shape [traceNumber, frame] or [frame]
             t (list or array): time vector (in seconds)
             t_base: time window (in seconds) for baseline
             t_resp: time window (in seconds) for response
             **kwargs: Optional arguments that will override default.
 
         Returns:
-            base (float): average signal between t_base
-            resp (float): max signal between t_resp
+            base (numpy array): average signal between t_base for each trace
+            resp (numpy array): max signal between t_resp for each trace
         """
         # Optionally override parameters using kwargs
         t_base = kwargs.get('t_base',t_base)
         t_resp = kwargs.get('t_resp',t_resp)
 
-        base = signal[np.where((t>=t_base[0]) & (t<=t_base[1]))].mean()
-        resp = np.max(signal[np.where((t>=t_resp[0]) & (t<=t_resp[1]))])
+        base_indices = np.where((t >= t_base[0]) & (t <= t_base[1]))[0]
+        resp_indices = np.where((t >= t_resp[0]) & (t <= t_resp[1]))[0]
+
+        if signal.ndim == 1:
+            # If the signal is 1D, treat it as a single trace
+            base = signal[base_indices].mean()
+            resp = signal[resp_indices].max()
+        elif signal.ndim == 2:
+            # If the signal is 2D, process each trace
+            base = np.mean(signal[:, base_indices], axis=1)
+            resp = np.max(signal[:, resp_indices], axis=1)
+        else:
+            raise ValueError("Signal array must be 1D or 2D.")
         
-        return base,resp
+        return base, resp
 
 
-def dFFcalc(signal, t_base: tuple[float,float] = (2.2,2.9), **kwargs):
+def dFFcalc(signal, **kwargs):
     """
     Calculates dFF for a signal such as average fluorescence over time.
 
     Args:
-        signal (numpy array or list): 1D signal array or list (eg. raw fluorescence)
-        t_base: time window (in seconds) for baseline
+        signal (numpy array): 1D or 2D signal array (e.g., raw fluorescence).
+                              Shape can be [frame] or [traceNumber, frame].
         **kwargs: Optional arguments that will override default.
+            Ror example:  t_base: time window (in seconds) for baseline
 
     Returns:
-        dFF (1D numpy array): deltaF/F of input signal
-        dF (1D numpy array): deltaF of input signal
-        f0 (float): baseline of signal
+        dFF (numpy array): deltaF/F of input signal (same shape as input signal).
+        dF (numpy array): deltaF of input signal (same shape as input signal).
+        f0 (float or numpy array): baseline signal (scalar for 1D, array for 2D).
     """
 
-    t = kwargs.get('t',getTimeVec(len(signal),**kwargs))
-    t_base = kwargs.get('t_base',t_base)
+    t = kwargs.get('t', getTimeVec(signal.shape[-1], **kwargs))
 
     # baseline (f0) to be subtracted
     f0 = getBaseResp(signal, t, **kwargs)[0]
     
-    # calculate dFF
-    dF = (signal-f0)
-    dFF = dF/f0
+    # Calculate dF and dFF
+    dF = signal - f0[:, np.newaxis] if signal.ndim == 2 else signal - f0
+    dFF = dF / f0[:, np.newaxis] if signal.ndim == 2 else dF / f0
 
     return dFF,dF,f0
      
