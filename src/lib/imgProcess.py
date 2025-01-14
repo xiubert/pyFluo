@@ -11,7 +11,7 @@ import holoviews as hv
 import panel as pn
 from matplotlib.path import Path
 
-from lib.signalProcess import butterFilter, getTimeVec
+from lib.signalProcess import butterFilter, getTimeVec, dFFcalc
 from lib.fileIngest import extract_qcamraw, qcams2imgs
 
 
@@ -245,22 +245,47 @@ def qcams2roiTrace(qcams: list):
     return ui, mask_output, np.array(imgs), spatialDFF
 
 
-def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF):
+def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF, **kwargs):
     """
-    Applies mask to array of images of shape [trace, Y, X, frame]
+    Applies mask (of shape [Y, X]) to array of images of shape [trace, Y, X, frame]
     and returns average rawF within ROI across frames in array of shape [trace, frame]
+
+    Args:
+        mask (numpy array): image mask comprised of 0 and 1 corresponding to ROI. Shape [Y, X]
+        imgs (numpy array): array of images of shape [trace, Y, X, frame]
+        spatialDFF (numpy array): Spatial dFF response, shape [Y, X]
+        kwargs: optional arguments for flexibility.
+    Returns:
+        ROITrace (numpy array): average fluorescence within ROI for each trace (shape: [trace, frame])
     """
-    t = getTimeVec(imgs.shape[-1])
+    t = getTimeVec(imgs.shape[-1], **kwargs)
     ROItrace = imgs[:,mask==1,:].mean(axis=1)
-    fig,ax = plt.subplots(2,2,figsize=(12,6))
+    fig,ax = plt.subplots(3,2,figsize=(12,6))
     ax[0,0].imshow(imgs.mean(axis=(0,3)),cmap='gray')
     ax[0,1].imshow(spatialDFF*(mask+.8),cmap='viridis')
+    
+    # raw F over entire image
     ax[1,0].plot(t,imgs.mean(axis=(0,1,2)))
-    ax[1,0].set_title('full img')
     ax[1,0].set_xlabel('time (s)')
+    ax[1,0].set_ylabel('raw F (full img)')
+    
+    # raw F within ROI
     ax[1,1].plot(t,ROItrace.mean(axis=(0)))
     ax[1,1].set_title('roi')
     ax[1,1].set_xlabel('time (s)')
+    ax[1,1].set_ylabel('raw F (ROI)')
+
+    
+    # dF and dFF
+    dFF,dF,_ = dFFcalc(ROItrace.mean(axis=(0)),**kwargs)
+    ax[2,0].plot(t,dF)
+    ax[2,0].set_title('roi')
+    ax[2,0].set_xlabel('time (s)')
+    ax[2,0].set_ylabel('dF (ROI)')
+    ax[2,1].plot(t,dFF)
+    ax[2,1].set_title('roi')
+    ax[2,1].set_ylabel('dFF (ROI)')
+    ax[2,1].set_xlabel('time (s)')
 
     fig.show()
 

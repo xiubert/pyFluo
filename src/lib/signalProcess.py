@@ -104,6 +104,34 @@ def getBaseResp(signal: np.ndarray, t: np.ndarray,
         return base,resp
 
 
+def dFFcalc(signal, t_base: tuple[float,float] = (2.2,2.9), **kwargs):
+    """
+    Calculates dFF for a signal such as average fluorescence over time.
+
+    Args:
+        signal (numpy array or list): 1D signal array or list (eg. raw fluorescence)
+        t_base: time window (in seconds) for baseline
+        **kwargs: Optional arguments that will override default.
+
+    Returns:
+        dFF (1D numpy array): deltaF/F of input signal
+        dF (1D numpy array): deltaF of input signal
+        f0 (float): baseline of signal
+    """
+
+    t = kwargs.get('t',getTimeVec(len(signal),**kwargs))
+    t_base = kwargs.get('t_base',t_base)
+
+    # baseline (f0) to be subtracted
+    f0 = getBaseResp(signal, t, **kwargs)[0]
+    
+    # calculate dFF
+    dF = (signal-f0)
+    dFF = dF/f0
+
+    return dFF,dF,f0
+     
+
 def pkDFFimg(imgSeries: np.ndarray,
                 subLinFit: bool = True, 
                 butterFilt: bool = True, 
