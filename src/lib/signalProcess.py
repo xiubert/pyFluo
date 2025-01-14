@@ -2,7 +2,10 @@ from scipy.signal import butter, filtfilt
 import numpy as np
 
 
-def getTimeVec(nFrames: int, frameRate: int = 20, zeroStart: bool = True):
+def getTimeVec(nFrames: int, 
+               frameRate: int = 20, 
+               zeroStart: bool = True,
+               **kwargs):
     """
     Generate time vector from frame count and rate.
 
@@ -10,9 +13,15 @@ def getTimeVec(nFrames: int, frameRate: int = 20, zeroStart: bool = True):
         nFrames (int): number of frames
         frameRate (int): number of frames acquired per second
         zeroStart (bool): whether first frame acquired at time 0.
+        **kwargs: Optional arguments that will override default.
+
     Returns:
         t (numpy array): vector of time values
     """
+    # Optionally override parameters using kwargs
+    frameRate = kwargs.get('frameRate', frameRate)
+    zeroStart = kwargs.get('zeroStart', zeroStart)
+
     # first frame acquired (1/fr) s after start
     t = (np.arange(1, nFrames + 1) * (1 / frameRate))
     # first frame acquired at start (starts at 0)
@@ -34,7 +43,7 @@ def butterFilter(signal: np.ndarray,
         sampleFreq (int): sampling frequency of the signal
         cutoff_freq: filter cutoff frequency
         order: filter order ('steepness' of signal drop-off at cutoff_freq)
-        **kwargs: Additional arguments for flexibility
+        **kwargs: Optional arguments that will override default.
 
     Returns:
         filtered_signal (numpy array): lowpass filtered signal
@@ -49,7 +58,7 @@ def butterFilter(signal: np.ndarray,
     return filtfilt(b,a,signal)
 
 
-def subtractLinFit(t,signal: np.ndarray) -> np.ndarray:
+def subtractLinFit(t, signal: np.ndarray) -> np.ndarray:
     """
     Subtracts linear fit of signal from signal. 
     Useful to remove consistent signal drift in one direction.
@@ -79,7 +88,7 @@ def getBaseResp(signal: np.ndarray, t: np.ndarray,
             t (list or array): time vector (in seconds)
             t_base: time window (in seconds) for baseline
             t_resp: time window (in seconds) for response
-            **kwargs: Additional arguments for flexibility
+            **kwargs: Optional arguments that will override default.
 
         Returns:
             base (float): average signal between t_base
@@ -95,10 +104,10 @@ def getBaseResp(signal: np.ndarray, t: np.ndarray,
         return base,resp
 
 
-def pkDFF(imgSeries: np.ndarray, t,
-          subLinFit: bool = True, 
-          butterFilt: bool = True, 
-          **kwargs):
+def pkDFFimg(imgSeries: np.ndarray,
+                subLinFit: bool = True, 
+                butterFilt: bool = True, 
+                **kwargs):
     """
     Calculates peak dFF response from image series array.
     
@@ -106,15 +115,15 @@ def pkDFF(imgSeries: np.ndarray, t,
         imgSeries (array): array of shape (Y, X, frame)
         subLinFit (bool): whether to subtract fitted line
         butterFilt (bool): whether to apply low pass filter
+        **kwargs: Optional arguments that will override default.
+
     Returns:
         pk (float): absolute peak of dFF response
     """
+    t = getTimeVec(imgSeries.shape[-1],**kwargs)
 
-    ROImask = kwargs.get('ROImask',None)
-    if ROImask is None:
-        signal = imgSeries.mean(axis=(0,1))
-    else:
-        signal = imgSeries[ROImask==1,:].mean(axis=0)
+    ROImask = kwargs.get('ROImask',np.ones(imgSeries.shape[:2]))
+    signal = imgSeries[ROImask==1,:].mean(axis=0)
     
     # whether to subtract fitted line
     if subLinFit:
