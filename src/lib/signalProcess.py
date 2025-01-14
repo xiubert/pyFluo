@@ -155,6 +155,8 @@ def pkDFFimg(imgSeries: np.ndarray,
         subLinFit (bool): whether to subtract fitted line
         butterFilt (bool): whether to apply low pass filter
         **kwargs: Optional arguments that will override default.
+            example:  mask (np.ndarray): 2D binary mask array specifying the region of interest
+
 
     Returns:
         pk (float): absolute peak of dFF response

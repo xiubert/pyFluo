@@ -148,7 +148,36 @@ def qcams2imgs(qFiles: list, consistentFrameCt: bool = True) -> tuple[list[np.nd
 
 def qcamPath2table(exprmntPaths: list[str], format: str = 'MAK') -> pd.DataFrame:
     """
-    Takes list of experiment directories and returns table of qcam files to xsg and pulse metadata.
+    Generates a DataFrame mapping qcam files to corresponding XSG files and pulse metadata.
+
+    Args:
+        exprmntPaths (list[str]): List of experiment directory paths to search for `.qcamraw` files.
+        format (str, optional): Format for extracting dB values from pulse metadata. 
+                                - 'MAK': Matches patterns like "_XXdB_YYYmsTotal_".
+                                - 'PAC': Matches patterns like "Hz_XXdB_TestTone_YYYmsPulse_".
+                                Defaults to 'MAK'.
+
+    Returns:
+        pd.DataFrame: A DataFrame containing the following columns:
+            - 'qcam': Full paths to `.qcamraw` files.
+            - 'dir': Corresponding experiment directory for each qcam file.
+            - 'xsg': Full paths to `.xsg` files, assuming a 1:1 mapping with `.qcamraw` files.
+                     If no corresponding `.xsg` file exists, the entry is dropped.
+            - 'pulse': The first pulse name extracted from the XSG file's metadata.
+            - 'dB': Decibel (dB) value extracted from the pulse metadata using the specified format.
+
+    Notes:
+        - This function assumes each `.qcamraw` file has a corresponding `.xsg` file in the same directory.
+        - The pulse metadata extraction relies on the first pulse name in the XSG file.
+        - Requires `metadataProcess.getPulseNames` and `metadataProcess.getPulseDB` to extract metadata.
+
+    Examples:
+        >>> exprmntPaths = ['exp1', 'exp2']
+        >>> df = qcamPath2table(exprmntPaths, format='MAK')
+        >>> print(df)
+                     qcam   dir                         xsg           pulse   dB
+        0  exp1/file1.qcamraw  exp1  exp1/file1.xsg  PulseName1   75
+        1  exp2/file2.qcamraw  exp2  exp2/file2.xsg  PulseName2   80
     """
     qcams = []
     dirs = []
@@ -171,20 +200,46 @@ def qcamPath2table(exprmntPaths: list[str], format: str = 'MAK') -> pd.DataFrame
     return df
 
 
-def loadQCamTable(df: pd.DataFrame) -> tuple[pd.DataFrame,dict,dict]:
+def loadQCamTable(df: pd.DataFrame) -> tuple[pd.DataFrame, dict, dict]:
     """
-    Returns df with tile instantiation time and 
-    dicts of qcam image data and headers provided qcam metadata table.
+    Processes a DataFrame of qcam metadata and returns the updated DataFrame along with image and header data.
+
+    Args:
+        df (pd.DataFrame): A DataFrame containing qcam metadata, including a column named 'qcam' with paths to `.qcamraw` files.
+
+    Returns:
+        tuple:
+            - pd.DataFrame: Updated DataFrame with additional columns:
+                - 'nFrames': Number of frames in the qcam image data.
+                - 'timestamp_init': Initialization timestamp of the qcam file (converted to datetime).
+                - 'dim_YX': Tuple representing the image dimensions (height, width) as `(y, x)`.
+            - dict: Dictionary mapping each qcam file path to its corresponding image data.
+            - dict: Dictionary mapping each qcam file path to its metadata headers.
+
+    Notes:
+        - The function uses `extract_qcamraw` to load image data and header metadata for each qcam file.
+        - Assumes the qcam header contains a 'ROI' field formatted as "startX,startY,endX,endY".
+        - Timestamps in the qcam header are expected to follow the format '%m-%d-%Y_%H:%M:%S'.
+        - Additional processing merges extracted metadata into the input DataFrame.
+
+    Example:
+        >>> df = pd.DataFrame({'qcam': ['path/to/file1.qcamraw', 'path/to/file2.qcamraw']})
+        >>> updated_df, qcam2img, qcam2header = loadQCamTable(df)
+        >>> print(updated_df)
+                           qcam  nFrames         timestamp_init    dim_YX
+        0  path/to/file1.qcamraw      500  2025-01-14 10:30:00  (512, 512)
+        1  path/to/file2.qcamraw      600  2025-01-14 11:00:00  (256, 256)
+
     """
     qcam2img,qcam2header = {},{}
     timeStamps = []
     for _,b in df.iterrows():
         qcam2img[b.qcam],qcam2header[b.qcam] = extract_qcamraw(b.qcam)
-        _,_,x,y = map(int,qcam2header[b.qcam]['ROI'].replace(' ','').split(','))
+        _, _, x, y = map(int, qcam2header[b.qcam]['ROI'].replace(' ','').split(','))
 
-        timeStamps.append((b.qcam,qcam2img[b.qcam].shape[2],qcam2header[b.qcam]['File_Init_Timestamp'],(y,x)))
+        timeStamps.append((b.qcam, qcam2img[b.qcam].shape[2], qcam2header[b.qcam]['File_Init_Timestamp'], (y,x)))
 
-    df = df.merge(pd.DataFrame(timeStamps,columns=['qcam','nFrames','timestamp_init','dim_YX']),on='qcam')
+    df = df.merge(pd.DataFrame(timeStamps, columns=['qcam','nFrames','timestamp_init','dim_YX']), on='qcam')
     df['timestamp_init'] = pd.to_datetime(df['timestamp_init'], format='%m-%d-%Y_%H:%M:%S')
 
     return df,qcam2img,qcam2header

@@ -109,8 +109,38 @@ def getXYdisp(Xcoor: list[np.ndarray], Ycoor: list[np.ndarray],
     return np.array(Xdiffs),np.array(Ydiffs)
 
 
-def getEdgeXYdisp(imgSeries,mask,frameDiff):
+def getEdgeXYdisp(imgSeries: np.ndarray, mask: np.ndarray, frameDiff: int) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Calculates the displacement of edge coordinates across frames of an image series, within a specified mask.
 
+    Args:
+        imgSeries (np.ndarray): 3D array of image frames with shape (height, width, frames).
+        mask (np.ndarray): 2D binary mask array specifying the region of interest for edge detection.
+        frameDiff (int): Number of frames between which to calculate the displacement in pixel coordinates.
+
+    Returns:
+        tuple:
+            - Xdisp (np.ndarray): Array of average X-coordinate displacements between frames.
+            - Ydisp (np.ndarray): Array of average Y-coordinate displacements between frames.
+            - meanX (np.ndarray): Array of mean X-coordinates for each frame.
+            - medianX (np.ndarray): Array of median X-coordinates for each frame.
+            - meanY (np.ndarray): Array of mean Y-coordinates for each frame.
+            - medianY (np.ndarray): Array of median Y-coordinates for each frame.
+
+    Notes:
+        - The function detects edges in each frame using `getImgEdges`.
+        - Edge coordinates are constrained to the region defined by the mask.
+        - Displacements are calculated by comparing pixel coordinates of edges across frames.
+        - Mean and median coordinates are computed for both X and Y edge positions in each frame.
+
+    Example:
+        >>> Xdisp, Ydisp, meanX, medianX, meanY, medianY = getEdgeXYdisp(imgSeries, mask, frameDiff=2)
+        >>> print("X displacements:", Xdisp)
+        >>> print("Y displacements:", Ydisp)
+        >>> print("Mean X-coordinates:", meanX)
+        >>> print("Median X-coordinates:", medianX)
+
+    """
     YXcoors = []
     for frame in np.arange(imgSeries.shape[2]):        
         edge = getImgEdges(imgSeries[:,:,frame])
@@ -135,13 +165,54 @@ def getEdgeXYdisp(imgSeries,mask,frameDiff):
 
 def getROImaskUI(image: np.ndarray, show_mask: bool = True):
     """
-    Creates an interactive interface for drawing a polygon ROI on an image and generates a binary mask.
-    
-    Parameters:
-        image (numpy.ndarray): Input image array for visualization and mask generation.
+    Creates an interactive interface for defining a polygonal Region of Interest (ROI) on an image 
+    and generates a corresponding binary mask.
+
+    This function uses Holoviews and Panel to provide an interactive tool for drawing a polygon 
+    on a given image. It generates a binary mask corresponding to the drawn polygon and 
+    optionally displays the mask for visual confirmation.
+
+    Args:
+        image (numpy.ndarray): 2D array representing the input image on which the ROI is drawn.
+        show_mask (bool): If True, displays the binary mask of the ROI after it is created.
 
     Returns:
-        A Panel layout with the interactive interface and the mask as output.
+        tuple:
+            - pn.Column: A Panel layout object containing the interactive interface 
+              (image display, polygon tool, button, and mask output visualization).
+            - dict: A dictionary containing the generated binary mask under the key `'mask'`.
+
+    Notes:
+        - The ROI is defined interactively by drawing a polygon using the Holoviews `PolyDraw` tool.
+        - The mask is created by mapping the polygon coordinates to the image dimensions.
+        - The binary mask is stored in the returned dictionary as a 2D NumPy array.
+        - The mask is flipped vertically to match the visualization orientation in Matplotlib.
+
+    Example:
+        >>> import numpy as np
+        >>> from getROImaskUI import getROImaskUI
+        >>> image = np.random.rand(100, 100)  # Example image
+        >>> panel_layout, mask_data = getROImaskUI(image)
+        >>> panel_layout.show()  # Launch the interactive tool
+        >>> # After drawing the ROI and clicking the button:
+        >>> roi_mask = mask_data['mask']
+        >>> print("Generated mask shape:", roi_mask.shape)
+
+    Dependencies:
+        - Holoviews (`hv`)
+        - Panel (`pn`)
+        - Matplotlib (`plt`)
+        - NumPy
+        - Shapely's `Path` for polygon operations
+
+    Interactive Tools:
+        - Polygon drawing is handled by Holoviews' `PolyDraw` tool.
+        - A button is provided to generate and display the binary mask.
+
+    Limitations:
+        - Only one polygon can be drawn per invocation (due to `num_objects=1`).
+        - Assumes the input image is grayscale or 2D.
+
     """
     # for running in jupyter notebook
     pn.extension()
@@ -233,7 +304,39 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True):
 
 def qcams2roiTrace(qcams: list):
     """
-    Takes list of qcam paths and returns UI for drawing ROI
+    Processes a list of qcam file paths to generate an interactive UI for drawing an ROI 
+    and calculates the corresponding spatial Delta F/F (dFF) response for the average image series.
+    
+    This function extracts images from the provided qcam paths, computes the average image series,
+    calculates the spatial dFF response, and returns an interactive user interface (UI) for drawing a 
+    Region of Interest (ROI) on the computed spatial dFF response.
+
+    Args:
+        qcams (list): A list of file paths to qcam files (e.g., '*.qcamraw').
+
+    Returns:
+        tuple:
+            - UI: An interactive Panel layout for drawing an ROI on the spatial dFF response.
+            - mask_output (dict): A dictionary containing the binary mask of the drawn ROI.
+            - imgs (numpy.ndarray): A 3D NumPy array of images extracted from the qcam files.
+            - spatialDFF (numpy.ndarray): The spatial dFF response for the average image series.
+
+    Notes:
+        - The function assumes that the qcam files are in a format supported by `qcams2imgs` for image extraction.
+        - The spatial dFF response is calculated on the mean of the extracted images across frames.
+        - The ROI mask can be drawn interactively using the provided UI, and the generated mask can be used for further analysis.
+
+    Example:
+        >>> qcam_paths = ['path/to/qcam1.qcamraw', 'path/to/qcam2.qcamraw']
+        >>> ui, mask_output, imgs, spatial_dff = qcams2roiTrace(qcam_paths)
+        >>> ui  # Launch the interactive UI for ROI drawing
+        >>> roi_mask = mask_output['mask']  # Access the generated ROI mask
+
+    Dependencies:
+        - `qcams2imgs`: A function for extracting images from qcam file paths.
+        - `calcSpatialDFFresp`: A function for calculating the spatial Delta F/F response from the average image series.
+        - `getROImaskUI`: A function that creates an interactive UI for drawing a polygon ROI and generates the binary mask.
+
     """
     imgs,_ = qcams2imgs(qcams)
     avgImgSeries = np.array(imgs).mean(axis=(0))
@@ -250,7 +353,7 @@ def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF, **kwargs):
     and returns average rawF within ROI across frames in array of shape [trace, frame]
 
     Args:
-        mask (numpy array): image mask comprised of 0 and 1 corresponding to ROI. Shape [Y, X]
+        mask (np.ndarray): 2D binary mask array specifying the region of interest for edge detection (shape: [Y, X]).
         imgs (numpy array): array of images of shape [trace, Y, X, frame]
         spatialDFF (numpy array): Spatial dFF response, shape [Y, X]
         kwargs: optional arguments for flexibility.
