@@ -95,12 +95,13 @@ def getInjectionCond(df):
         list: list where each element is the injection condition for that qcamraw file.
     """
     injection_labels = []
-
+    ZX1fileNameRegex = r'[A-Z]{2}\d{4}(?=.*[ZX])[A-Z]{4}\d{4}'
+    
     for exp_dir, group in df.groupby('dir'):
         # Check for ZXXX qcam files
-        if group['qcam'].str.contains(r'[A-Z]{2}\d{4}ZXXX\d{4}', regex=True).any():
+        if group['qcam'].str.contains(ZX1fileNameRegex, regex=True).any():
             for _, row in group.iterrows():
-                if re.search(r'[A-Z]{2}\d{4}ZXXX\d{4}', row['qcam']):
+                if re.search(ZX1fileNameRegex, row['qcam']):
                     injection_labels.append('postZX1')
                 else:
                     injection_labels.append('preZX1')
