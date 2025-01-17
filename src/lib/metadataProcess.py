@@ -71,7 +71,7 @@ def getPulseDB(pulse: str, format: str = 'MAK'):
         - Returns `None` if the format is not recognized or no match is found.
     """
     if format=='MAK':
-        dBre = re.compile(r'_(\d{2,3})dB_\d{2,5}msTotal_')
+        dBre = re.compile(r'_(\d{1,3})dB_\d{2,5}msTotal_')
     elif format=='PAC':
         dBre = re.compile(r'Hz_(\d{2,3})dB_TestTone_\d{2,5}msPulse_')
     else:
