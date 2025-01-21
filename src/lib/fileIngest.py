@@ -146,7 +146,7 @@ def qcams2imgs(qFiles: list, consistentFrameCt: bool = True) -> tuple[list[np.nd
     return imgs,headers
 
 
-def qcamPath2table(exprmntPaths: list[str], format: str = 'MAK') -> pd.DataFrame:
+def qcamPath2table(exprmntPaths: list[str], format: str = 'MAK', subfolder: bool = False) -> pd.DataFrame:
     """
     Generates a DataFrame mapping qcam files to corresponding XSG files and pulse metadata.
 
@@ -156,6 +156,10 @@ def qcamPath2table(exprmntPaths: list[str], format: str = 'MAK') -> pd.DataFrame
                                 - 'MAK': Matches patterns like "_XXdB_YYYmsTotal_".
                                 - 'PAC': Matches patterns like "Hz_XXdB_TestTone_YYYmsPulse_".
                                 Defaults to 'MAK'.
+        subfolder (bool, optional): Whether to do recursive search for files within subfolders under "exprmntPaths".
+                                    - 'True': Allows recursive search in subfolders.
+                                    - 'False': Not allows recursive search in subfolders.
+                                    Defaults to 'False'.
 
     Returns:
         pd.DataFrame: A DataFrame containing the following columns:
@@ -183,7 +187,10 @@ def qcamPath2table(exprmntPaths: list[str], format: str = 'MAK') -> pd.DataFrame
     dirs = []
 
     for p in exprmntPaths:
-        qpaths = glob(os.path.join(p,'*.qcamraw'))
+        if subfolder:
+            qpaths = glob(os.path.join(p,'**','*.qcamraw'), recursive=True)
+        else:
+            qpaths = glob(os.path.join(p,'*.qcamraw'))
         qcams.extend(qpaths)
         dirs.extend([p]*len(qpaths))
 
