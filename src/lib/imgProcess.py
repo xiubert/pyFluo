@@ -34,10 +34,16 @@ def calcSpatialDFFresp(imgSeries: np.ndarray,
         stimlen (float): length of stimulus (in seconds)
         t_temporalAvg (tuple): start and end time points (inclusive) between which to calculate average of spatialDFF
         temporalAvgFrameSpan (int): number of frames after stimulation for which spatialDFF average is computed
+        **kwargs: Optional arguments that will override default.
 
    Returns:
         spatialDFFresp (numpy array): edge pixels take the value 255
     """
+    # Optionally override parameters using kwargs
+    stimlen = kwargs.get('stimlen', stimlen)
+    temporalAvgFrameSpan = kwargs.get('temporalAvgFrameSpan', temporalAvgFrameSpan)
+    t_temporalAvg = kwargs.get('t_temporalAvg', t_temporalAvg)
+
     # get time array
     t = getTimeVec(imgSeries.shape[2], **kwargs)
 
@@ -302,7 +308,7 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True):
 
 
 
-def qcams2roiTrace(qcams: list):
+def qcams2roiTrace(qcams: list, **kwargs):
     """
     Processes a list of qcam file paths to generate an interactive UI for drawing an ROI 
     and calculates the corresponding spatial Delta F/F (dFF) response for the average image series.
@@ -320,6 +326,7 @@ def qcams2roiTrace(qcams: list):
             - mask_output (dict): A dictionary containing the binary mask of the drawn ROI.
             - imgs (numpy.ndarray): A 3D NumPy array of images extracted from the qcam files.
             - spatialDFF (numpy.ndarray): The spatial dFF response for the average image series.
+            - **kwargs: Optional key word arguments.
 
     Notes:
         - The function assumes that the qcam files are in a format supported by `qcams2imgs` for image extraction.
@@ -341,7 +348,7 @@ def qcams2roiTrace(qcams: list):
     imgs,_ = qcams2imgs(qcams)
     avgImgSeries = np.array(imgs).mean(axis=(0))
     
-    spatialDFF = calcSpatialDFFresp(avgImgSeries)
+    spatialDFF = calcSpatialDFFresp(avgImgSeries, **kwargs)
     ui, mask_output = getROImaskUI(spatialDFF)
 
     return ui, mask_output, np.array(imgs), spatialDFF
