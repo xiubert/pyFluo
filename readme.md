@@ -4,8 +4,10 @@
 1. Clone repository `https://github.com/xiubert/pyFluo.git` and change to respository directory (`cd pyFluo`).
 2. Create python venv for running these scripts to isolate dependencies: `python -m venv env`
 3. Activate virtual environment:
-    - unix: `source env/bin/activate`
-    - Windows: double click `env/bin/activate.bat`
+    - Unix: `source env/bin/activate`
+    - Windows: 
+        - VSCode terminal defaults to PowerShell: `.\env\Scripts\Activate.ps1`
+        - If in command prompt `.\env\bin\activate.bat`
 4. Install dependencies: `pip install -r requirements.txt`
 
 ## Quick overview of experiment average raw fluorescence
