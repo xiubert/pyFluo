@@ -246,7 +246,7 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True):
     image_hv = hv.Image(image, bounds=(0, 0, image.shape[1], image.shape[0])).opts(
         width=image.shape[1] * 3, 
         height=image.shape[0] * 3,
-        cmap='viridis',
+        cmap='jet',
     )
 
     poly = hv.Polygons([])
@@ -367,11 +367,17 @@ def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF, **kwargs):
     Returns:
         ROITrace (numpy array): average fluorescence within ROI for each trace (shape: [trace, frame])
     """
+    from skimage import measure
+    
     t = getTimeVec(imgs.shape[-1], **kwargs)
     ROItrace = imgs[:,mask==1,:].mean(axis=1)
-    fig,ax = plt.subplots(3,2,figsize=(12,6))
+    fig,ax = plt.subplots(3,2,figsize=(12,8))
     ax[0,0].imshow(imgs.mean(axis=(0,3)),cmap='gray')
-    ax[0,1].imshow(spatialDFF*(mask+.8),cmap='viridis')
+    heatmapImg = ax[0,1].imshow(spatialDFF,cmap='jet')
+    contours = measure.find_contours(mask, level=0.5)
+    for contour in contours:
+        ax[0,1].plot(contour[:, 1], contour[:, 0], color='black', linewidth=2)
+    plt.colorbar(heatmapImg)
     
     # raw F over entire image
     ax[1,0].plot(t,imgs.mean(axis=(0,1,2)))
@@ -396,6 +402,7 @@ def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF, **kwargs):
     ax[2,1].set_ylabel('dFF (ROI)')
     ax[2,1].set_xlabel('time (s)')
 
+    plt.tight_layout()
     fig.show()
 
     return ROItrace
