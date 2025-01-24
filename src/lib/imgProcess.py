@@ -376,6 +376,7 @@ def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF, **kwargs):
     heatmapImg = ax[0,1].imshow(spatialDFF,cmap='jet')
     contours = measure.find_contours(mask, level=0.5)
     for contour in contours:
+        ax[0,0].plot(contour[:, 1], contour[:, 0], color='white', linewidth=2)
         ax[0,1].plot(contour[:, 1], contour[:, 0], color='black', linewidth=2)
     plt.colorbar(heatmapImg)
     
