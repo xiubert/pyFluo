@@ -186,7 +186,7 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True):
         tuple:
             - pn.Column: A Panel layout object containing the interactive interface 
               (image display, polygon tool, button, and mask output visualization).
-            - dict: A dictionary containing the generated binary mask under the key `'mask'`.
+            - dict: A dictionary containing the generated binary mask under the key `'mask'`, key `'ROIcontour'` for ROI points.
 
     Notes:
         - The ROI is defined interactively by drawing a polygon using the Holoviews `PolyDraw` tool.
@@ -282,6 +282,11 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True):
             # Flip the mask vertically for correct display with matplotlib
             mask_flipped = np.flipud(mask)
             mask_output['mask'] = mask_flipped  # Store the mask in the result dictionary
+            contour = np.array(points)
+            contour[:,1] = mask_flipped.shape[0]-contour[:,1] #flip y values
+            # close polygon
+            contour = np.vstack([contour,contour[0,:]])
+            mask_output['ROIcontour'] = contour
 
             # Visualize
             if show_mask:
@@ -354,7 +359,7 @@ def qcams2roiTrace(qcams: list, **kwargs):
     return ui, mask_output, np.array(imgs), spatialDFF
 
 
-def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF, **kwargs):
+def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF: np.ndarray = None, ROIcontour: np.ndarray = None, **kwargs):
     """
     Applies mask (of shape [Y, X]) to array of images of shape [trace, Y, X, frame]
     and returns average rawF within ROI across frames in array of shape [trace, frame]
@@ -363,21 +368,20 @@ def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF, **kwargs):
         mask (np.ndarray): 2D binary mask array specifying the region of interest for edge detection (shape: [Y, X]).
         imgs (numpy array): array of images of shape [trace, Y, X, frame]
         spatialDFF (numpy array): Spatial dFF response, shape [Y, X]
+        ROIcontour (numpy array): [X, Y] coordinates of ROI
         kwargs: optional arguments for flexibility.
     Returns:
         ROITrace (numpy array): average fluorescence within ROI for each trace (shape: [trace, frame])
     """
-    from skimage import measure
     
     t = getTimeVec(imgs.shape[-1], **kwargs)
     ROItrace = imgs[:,mask==1,:].mean(axis=1)
     fig,ax = plt.subplots(3,2,figsize=(12,8))
     ax[0,0].imshow(imgs.mean(axis=(0,3)),cmap='gray')
     heatmapImg = ax[0,1].imshow(spatialDFF,cmap='jet')
-    contours = measure.find_contours(mask, level=0.5)
-    for contour in contours:
-        ax[0,0].plot(contour[:, 1], contour[:, 0], color='white', linewidth=2)
-        ax[0,1].plot(contour[:, 1], contour[:, 0], color='black', linewidth=2)
+    if isinstance(ROIcontour,np.ndarray):
+        ax[0,0].plot(ROIcontour[:, 0], ROIcontour[:, 1], color='white', linewidth=2)
+        ax[0,1].plot(ROIcontour[:, 0], ROIcontour[:, 1], color='black', linewidth=2)
     plt.colorbar(heatmapImg)
     
     # raw F over entire image
