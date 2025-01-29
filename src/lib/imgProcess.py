@@ -19,6 +19,30 @@ from lib.fileIngest import extract_qcamraw, qcams2imgs
 Functions for processing imaging signals.
 """
 
+def calcSpatialBaseFluo(imgSeries: np.ndarray, t_baseAvg: tuple[float,float] = (1,3), **kwargs) -> np.ndarray:
+    """
+    Calculate spatial baseline fluorescence (at each pixel).
+
+    Args:
+        imgSeries (array): array of shape (Y, X, frame). assumed to be grayscale.
+        t_baseAvg (tuple): start and end time points (inclusive) between which to calculate average of baseline fluorescence
+        **kwargs: Optional arguments that will override default.
+
+   Returns:
+        spatialBaseFluo (numpy array): edge pixels take the value 255
+    """
+    # Optionally override parameters using kwargs
+    t_baseAvg = kwargs.get('t_baseAvg', t_baseAvg)
+
+    # get time array
+    t = getTimeVec(imgSeries.shape[2], **kwargs)
+
+    # Reshape to 2D: (number of pixels, time points)
+    baselineIDX = np.where((t>=t_baseAvg[0]) & (t<=t_baseAvg[1]))[0]
+    spatialBaseFluo = imgSeries[:,:,baselineIDX].mean(axis=2)
+
+    return spatialBaseFluo
+
 def calcSpatialDFFresp(imgSeries: np.ndarray, 
                         t_baseline: tuple[float,float] = (2,3),
                         stimlen: float = 0.4,
@@ -313,29 +337,33 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True):
 
 
 
-def qcams2roiTrace(qcams: list, **kwargs):
+def qcams2roiTrace(qcams: list, baseline : bool = False, **kwargs):
     """
     Processes a list of qcam file paths to generate an interactive UI for drawing an ROI 
-    and calculates the corresponding spatial Delta F/F (dFF) response for the average image series.
+    and calculates the corresponding spatial Delta F/F (dFF) response or baseline fluorescence for the average image series.
     
     This function extracts images from the provided qcam paths, computes the average image series,
-    calculates the spatial dFF response, and returns an interactive user interface (UI) for drawing a 
-    Region of Interest (ROI) on the computed spatial dFF response.
+    calculates the spatial dFF response or baseline fluorescence, and returns an interactive user interface (UI) 
+    for drawing a Region of Interest (ROI) on the computed spatial dFF response or baseline fluorescence.
 
     Args:
         qcams (list): A list of file paths to qcam files (e.g., '*.qcamraw').
+        baseline (bool, optional): Whether to draw ROI on a spatial baseline fluorescence heatmap.
+                                    - 'True': Interactive UI for ROI drawing is the spatial baseline fluorescence heatmap.
+                                    - 'False': Interactive UI for ROI drawing is the spatial dFF response heatmap.
+                                    Defaults to 'False'.
 
     Returns:
         tuple:
-            - UI: An interactive Panel layout for drawing an ROI on the spatial dFF response.
+            - UI: An interactive Panel layout for drawing an ROI on the spatial dFF response or baseline fluorescence.
             - mask_output (dict): A dictionary containing the binary mask of the drawn ROI.
             - imgs (numpy.ndarray): A 3D NumPy array of images extracted from the qcam files.
-            - spatialDFF (numpy.ndarray): The spatial dFF response for the average image series.
+            - spatialDFF (numpy.ndarray): The spatial dFF response or baseline fluorescence (if baseline == True) for the average image series.
             - **kwargs: Optional key word arguments.
 
     Notes:
         - The function assumes that the qcam files are in a format supported by `qcams2imgs` for image extraction.
-        - The spatial dFF response is calculated on the mean of the extracted images across frames.
+        - The spatial dFF response or baseline fluorescence is calculated on the mean of the extracted images across frames.
         - The ROI mask can be drawn interactively using the provided UI, and the generated mask can be used for further analysis.
 
     Example:
@@ -346,6 +374,7 @@ def qcams2roiTrace(qcams: list, **kwargs):
 
     Dependencies:
         - `qcams2imgs`: A function for extracting images from qcam file paths.
+        - `calcSpatialBaseFluo`: A function for calculating the spatial baseline fluorescence from the average image series.
         - `calcSpatialDFFresp`: A function for calculating the spatial Delta F/F response from the average image series.
         - `getROImaskUI`: A function that creates an interactive UI for drawing a polygon ROI and generates the binary mask.
 
@@ -353,7 +382,10 @@ def qcams2roiTrace(qcams: list, **kwargs):
     imgs,_ = qcams2imgs(qcams)
     avgImgSeries = np.array(imgs).mean(axis=(0))
     
-    spatialDFF = calcSpatialDFFresp(avgImgSeries, **kwargs)
+    if baseline:
+        spatialDFF = calcSpatialBaseFluo(avgImgSeries, **kwargs)
+    else:
+        spatialDFF = calcSpatialDFFresp(avgImgSeries, **kwargs)
     ui, mask_output = getROImaskUI(spatialDFF)
 
     return ui, mask_output, np.array(imgs), spatialDFF
