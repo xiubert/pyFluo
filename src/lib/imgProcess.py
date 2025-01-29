@@ -38,9 +38,8 @@ def calcSpatialBaseFluo(imgSeries: np.ndarray, t_baseAvg: tuple[float,float] = (
     t = getTimeVec(imgSeries.shape[2], **kwargs)
 
     # Reshape to 2D: (number of pixels, time points)
-    reshaped_data = imgSeries.reshape(-1,200)
     baselineIDX = np.where((t>=t_baseAvg[0]) & (t<=t_baseAvg[1]))[0]
-    spatialBaseFluo = reshaped_data[:,baselineIDX].mean(axis=1).reshape(*imgSeries.shape[:2])
+    spatialBaseFluo = imgSeries[:,:,baselineIDX].mean(axis=2)
 
     return spatialBaseFluo
 
