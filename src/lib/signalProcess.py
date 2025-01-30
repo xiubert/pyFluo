@@ -1,5 +1,6 @@
 from scipy.signal import butter, filtfilt
 import numpy as np
+from typing import Tuple
 
 
 def getTimeVec(nFrames: int, 
@@ -189,3 +190,35 @@ def pkDFFimg(imgSeries: np.ndarray,
     pk = abs(pkResp-pkBase)
 
     return pk
+
+
+def meanPlusMinusSem(traceXtimeArray: np.ndarray) -> Tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Calculate the mean, mean plus standard error of the mean (SEM), 
+    and mean minus SEM along the first dimension of a 2D array.
+
+    can use in plot like so:        
+    
+    u,upsem,umsem = meanPMstd(np.array(b[F].tolist()))
+    ax.plot(t, u, '-', color = colors[i], label=a)
+    ax.fill_between(t, umsem, upsem, alpha=0.2)
+
+    Parameters:
+    -----------
+    traceXtimeArray : np.ndarray
+        A 2D NumPy array where rows correspond to individual traces 
+        and columns correspond to time points.
+
+    Returns:
+    --------
+    Tuple[np.ndarray, np.ndarray, np.ndarray]
+        A tuple containing three 1D arrays:
+        - Mean values across traces for each time point.
+        - Mean values plus SEM across traces for each time point.
+        - Mean values minus SEM across traces for each time point.
+    """
+    u = traceXtimeArray.mean(axis=0)
+    std = traceXtimeArray.std(axis=0)
+    sem = std / np.sqrt(traceXtimeArray.shape[0])
+
+    return u, u + sem, u - sem
