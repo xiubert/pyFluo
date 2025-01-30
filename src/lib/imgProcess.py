@@ -72,7 +72,7 @@ def calcSpatialDFFresp(imgSeries: np.ndarray,
     t = getTimeVec(imgSeries.shape[2], **kwargs)
 
     # Reshape to 2D: (number of pixels, time points)
-    reshaped_data = imgSeries.reshape(-1,200)
+    reshaped_data = imgSeries.reshape(-1, imgSeries.shape[2])
     baselineIDX = np.where((t>=t_baseline[0]) & (t<=t_baseline[1]))[0]
     spatialbase = reshaped_data[:,baselineIDX].mean(axis=1).reshape(-1,1)
     spatialDFF = (reshaped_data-spatialbase)/spatialbase
