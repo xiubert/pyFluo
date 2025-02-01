@@ -31,7 +31,8 @@ def plotTraceAvgImg(t,img,cutoff_freq: float = 3):
 
 
 def experimentAvgPlot(dPath: str = None, qFiles: list = None,
-                      suptitle: str = None, avgFperTrace: bool = True):
+                      suptitle: str = None, avgFperTrace: bool = True,
+                      **kwargs):
     if qFiles is None:
         qFiles = glob.glob(os.path.join(dPath,'*.qcamraw'))
 
@@ -53,8 +54,7 @@ def experimentAvgPlot(dPath: str = None, qFiles: list = None,
     ax[0].set_xticks(np.arange(0,int(max(t))+1))
 
     ax[1].imshow(calcSpatialDFFresp(np.array(imgs).mean(axis=0).reshape(*imgs[0].shape),
-                               stimlen=0.1, temporalAvgFrameSpan=8))
-
+                                    **kwargs), cmap='jet')
 
     # Format the x-axis to show readable datetime labels
     # ax[1].gcf().autofmt_xdate()
