@@ -2,6 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from datetime import datetime
 import os
+from glob import glob
 
 from lib.signalProcess import butterFilter, getTimeVec
 from lib.fileIngest import qcams2imgs
@@ -34,7 +35,7 @@ def experimentAvgPlot(dPath: str = None, qFiles: list = None,
                       suptitle: str = None, avgFperTrace: bool = True,
                       **kwargs):
     if qFiles is None:
-        qFiles = glob.glob(os.path.join(dPath,'*.qcamraw'))
+        qFiles = glob(os.path.join(dPath,'*.qcamraw'))
 
     imgs,headers = qcams2imgs(qFiles)
     t = getTimeVec(imgs[0].shape[2],zeroStart=False)
@@ -45,6 +46,7 @@ def experimentAvgPlot(dPath: str = None, qFiles: list = None,
         fig,ax = plt.subplots(3,1,figsize=(12,10))
         ax[2].plot(timeStamps,np.array(imgs).mean(axis=(1,2,3)),'.')
         ax[2].set_ylabel('raw F')
+        ax[2].set_xlabel('experiment time')
 
     else:
         fig,ax = plt.subplots(2,1,figsize=(12,10))
