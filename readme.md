@@ -10,6 +10,9 @@
         - If in command prompt `.\env\bin\activate.bat`
 4. Install dependencies: `pip install -r requirements.txt`
 
+## Organize experiments into ExperimentGroup and show experiment overview
+- Notebook: `src/experiment_group_oop.ipynb`
+
 ## Quick overview of experiment average raw fluorescence
 - Notebook: `src/avgExperiment.ipynb`
 
