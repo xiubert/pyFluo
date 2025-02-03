@@ -6,6 +6,7 @@ from operator import itemgetter
 
 import lib.fileIngest as fileIngest
 import lib.plotting as plotting
+import lib.metadataProcess as metadataProcess
 
 class Experiment:
     def __init__(self, directory, parent=None, format: str = 'MAK', subfolder: bool = False):
@@ -31,6 +32,9 @@ class Experiment:
         else:
             # If standalone, create its own DataFrame and storage
             self.df = fileIngest.qcamPath2table([self.directory], self.format, self.subfolder)
+            # Load treatment / injection metadata
+            self.df['treatment'] = metadataProcess.getInjectionCond(self.df)
+            
             self.qcam2img = {}
             self.qcam2header = {}
 
@@ -87,10 +91,19 @@ class Experiment:
             qFiles = self.df['qcam'].tolist()
          
         plotting.experimentAvgPlot(qFiles=qFiles,**kwargs)
+    
+    def plotDF_levelByTreatment(self, **kwargs):
+        # in case ExperimentGroup df was filtered:
+        if self.parent is not None:
+            df_plot = self.parent.df[self.parent.df['dir'] == self.directory]
+        else:
+            df_plot = self.df
+            
+        plotting.plotDF_levelByTreatment(df_plot,self.qcam2img,**kwargs)
 
 
 class ExperimentGroup:
-    def __init__(self, experiment_dirs: list, format: str = 'MAK', subfolder: list[bool] = None):
+    def __init__(self, experiment_dirs: list, format: str = 'MAK', subfolder: bool = False):
         """
         Initializes an ExperimentGroup that contains multiple experiments.
 
@@ -107,6 +120,9 @@ class ExperimentGroup:
 
         # Generate metadata table for all experiments at once
         self.df = fileIngest.qcamPath2table(self.experiment_dirs, self.format, self.subfolder)
+
+        # Load treatment / injection metadata
+        self.df['treatment'] = metadataProcess.getInjectionCond(self.df)
 
         # Initialize experiment objects (referencing the same dataframe and shared storage)
         self.experiments = [Experiment(directory, self) for directory in experiment_dirs]

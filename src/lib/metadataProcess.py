@@ -82,51 +82,48 @@ def getPulseDB(pulse: str, format: str = 'MAK'):
         return None
     
 
-def getInjectionCond(df):
+def getInjectionCond(df) -> list:
     """
-    Labels files in the DataFrame under a specific experimental condition.
-    Adds a column 'INJECTION' with values: 'CTRL', 'pre[DRUG]', or 'post[DRUG]', eg. preZX1, postZX1.
+    Returns treatment label for files (rows) in the DataFrame under a specific experimental condition.
+    No treatment is considered 'CTRL'. Injection treatments are lebeled as: 'pre[DRUG]', or 'post[DRUG]', eg. preZX1, postZX1.
 
     Args:
         df (pd.DataFrame): DataFrame containing file information, with columns:
                            'dir' (experiment directory) and 'qcam' (file name).
 
     Returns:
-        list: list where each element is the injection condition for that qcamraw file.
+        list: list where each element is the treatment condition for that qcamraw file.
     """
-    injection_labels = []
+    treatment_labels = []
     ZX1fileNameRegex = r'[A-Z]{2}\d{4}(?=.*[ZX])[A-Z]{4}\d{4}'
     
     for exp_dir, group in df.groupby('dir'):
-        # Check for ZXXX qcam files
+        # Check for ZXXX qcam files indicating a ZX1 injection treatment
         if group['qcam'].str.contains(ZX1fileNameRegex, regex=True).any():
             for _, row in group.iterrows():
                 if re.search(ZX1fileNameRegex, row['qcam']):
-                    injection_labels.append('postZX1')
+                    treatment_labels.append('postZX1')
                 else:
-                    injection_labels.append('preZX1')
+                    treatment_labels.append('preZX1')
 
-        # Check for INJECTION_[DRUG]_START files
+        # Otherwise, check for INJECTION_[DRUG]_START files in the experiment directory indicating treatment
         elif len(glob(os.path.join(exp_dir, 'INJECTION_*_START*'))) == 1:
             fstart = glob(os.path.join(exp_dir, 'INJECTION_*_START*'))[0]
             match = re.search(r'_([A-Z0-9]+)_START_(\d+)', fstart)
             if match:
                 drug = match.group(1)
-                start_number = int(match.group(2))  # Start number for postZX1
+                start_number = int(match.group(2))  # Start number for post treatment (eg. postZX1)
                 for _, row in group.iterrows():
                     qcam_number = int(re.search(r'(\d{4})\.qcamraw$', row['qcam']).group(1))  # Extract qcam number
                     if qcam_number >= start_number:
-                        injection_labels.append(f'post{drug}')
+                        treatment_labels.append(f'post{drug}')
                     else:
-                        injection_labels.append(f'pre{drug}')
+                        treatment_labels.append(f'pre{drug}')
             else:
                 raise ValueError('Unable to parse injection start file.')
 
-        # No injection condition
+        # No treatment condition
         else:
-            injection_labels.extend(['CTRL'] * len(group))
+            treatment_labels.extend(['CTRL'] * len(group))
 
-    # Add the INJECTION column to the DataFrame
-    # df['INJECTION'] = injection_labels
-    # return df
-    return injection_labels
+    return treatment_labels
