@@ -6,6 +6,7 @@ from typing import Tuple
 def getTimeVec(nFrames: int, 
                frameRate: int = 20, 
                zeroStart: bool = True,
+               delayAdjust: float = 0.025,
                **kwargs):
     """
     Generate time vector from frame count and rate.
@@ -14,6 +15,7 @@ def getTimeVec(nFrames: int,
         nFrames (int): number of frames
         frameRate (int): number of frames acquired per second
         zeroStart (bool): whether first frame acquired at time 0.
+        delayAdjust (float): adjustment in time (s) for frame data acquisition.
         **kwargs: Optional arguments that will override default.
 
     Returns:
@@ -24,7 +26,7 @@ def getTimeVec(nFrames: int,
     zeroStart = kwargs.get('zeroStart', zeroStart)
 
     # first frame acquired (1/fr) s after start
-    t = (np.arange(1, nFrames + 1) * (1 / frameRate))
+    t = (np.arange(1, nFrames + 1) * (1 / frameRate)) + delayAdjust
     # first frame acquired at start (starts at 0)
     if zeroStart:
         return t-(1/frameRate)
