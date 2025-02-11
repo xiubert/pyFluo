@@ -93,7 +93,7 @@ def subtractLinFit(t, signal: np.ndarray, offset: bool = True, **kwargs) -> np.n
 def getBaseResp(signal: np.ndarray, t: np.ndarray, 
                 t_base: tuple[float,float] = (2.2,2.9),
                 t_resp: tuple[float,float] = (3.0,3.15),
-                negResp: bool = True,
+                negResp: bool = False,
                 **kwargs) -> tuple[float,float]:
     """
     Extract average signal at t_base and max signal between t_resp.
@@ -107,7 +107,7 @@ def getBaseResp(signal: np.ndarray, t: np.ndarray,
                                 - 'True': Response with max absolute value is returned, whether positive or negative.
                                           Orginal sign of the response is preserved.
                                 - 'False': Only max positive response is returned.
-                                Defaults to 'True'.
+                                Defaults to 'False'.
         **kwargs: Optional arguments that will override default.
 
     Returns:
