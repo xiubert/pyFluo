@@ -360,13 +360,18 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True,
             if os.path.exists(savePath):
                 print("File existing in the same path.")
                 exist_files = glob(savePath.replace('.joblib', '_[0-9][0-9][0-9].joblib'))
-                
+
                 # Increment the maximum sequence number by 1 as backup path
-                seq_list = []
-                for file in exist_files:
-                    seqNum = re.search(r"_(\d{3})\.joblib$", file)
-                    seq_list.append(int(seqNum.group(1)))
-                seq_max = max(seq_list) if seq_list else 0
+                # seq_list = []
+                # for file in exist_files:
+                #     seqNum = re.search(r"_(\d{3})\.joblib$", file)
+                #     seq_list.append(int(seqNum.group(1)))
+                # seq_max = max(seq_list) if seq_list else 0
+                seq_numbers = [
+                    int(match.group(1)) for f in exist_files if (match := re.search(r"_(\d{3})\.joblib$", f))
+                ]
+                seq_max = max(seq_numbers) if seq_numbers else 0
+
                 backupPath = savePath.replace('.joblib', f"_{seq_max + 1:03}.joblib")
                 os.rename(savePath, backupPath)
                 print(f"Existing files backed up to: {backupPath}")
