@@ -5,6 +5,7 @@ from roipoly import RoiPoly
 import joblib
 import os
 from glob import glob
+import re
 
 from holoviews import opts, streams
 import holoviews as hv
@@ -193,23 +194,31 @@ def getEdgeXYdisp(imgSeries: np.ndarray, mask: np.ndarray, frameDiff: int) -> tu
     return Xdisp, Ydisp, meanX, medianX, meanY, medianY
 
 
-def getROImaskUI(image: np.ndarray, show_mask: bool = True):
+def getROImaskUI(image: np.ndarray, show_mask: bool = True, 
+                 expDir: str = None, saveName: str = "response_mask", 
+                 **kwargs):
     """
     Creates an interactive interface for defining a polygonal Region of Interest (ROI) on an image 
-    and generates a corresponding binary mask.
+    and generates a corresponding binary mask. Optionally saves the mask as a `joblib` file in the designated directory.
 
     This function uses Holoviews and Panel to provide an interactive tool for drawing a polygon 
-    on a given image. It generates a binary mask corresponding to the drawn polygon and 
-    optionally displays the mask for visual confirmation.
+    on a given image. It generates a binary mask corresponding to the drawn polygon, 
+    optionally displays the mask for visual confirmation and saves the mask as a `joblib` file.
 
     Args:
         image (numpy.ndarray): 2D array representing the input image on which the ROI is drawn.
         show_mask (bool): If True, displays the binary mask of the ROI after it is created.
+        expDir (str, optional): Directory (folder) where the binary mask is to be saved.
+                                - `None`: The binary mask cannot be saved. The `Save ROI mask` button is grey and cannot be clicked.
+                                Defaults to `None`.
+        saveName (str, optional): Name of the saved `joblib` file.
+                                Defaults to `'response_mask'`.
+        **kwargs: Optional key word arguments.
 
     Returns:
         tuple:
             - pn.Column: A Panel layout object containing the interactive interface 
-              (image display, polygon tool, button, and mask output visualization).
+              (image display, polygon tool, buttons, and mask output visualization).
             - dict: A dictionary containing the generated binary mask under the key `'mask'`, key `'ROIcontour'` for ROI points.
 
     Notes:
@@ -217,6 +226,7 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True):
         - The mask is created by mapping the polygon coordinates to the image dimensions.
         - The binary mask is stored in the returned dictionary as a 2D NumPy array.
         - The mask is flipped vertically to match the visualization orientation in Matplotlib.
+        - The existing file of the same name in the same directory is backed up automatically to avoid overriding.
 
     Example:
         >>> import numpy as np
@@ -233,17 +243,24 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True):
         - Panel (`pn`)
         - Matplotlib (`plt`)
         - NumPy
+        - re
         - Shapely's `Path` for polygon operations
 
     Interactive Tools:
         - Polygon drawing is handled by Holoviews' `PolyDraw` tool.
-        - A button is provided to generate and display the binary mask.
+        - `Get ROI mask` button to generate and display the binary mask.
+        - `Save ROI mask` button to save the binary mask as a `joblib` file.
 
     Limitations:
         - Only one polygon can be drawn per invocation (due to `num_objects=1`).
         - Assumes the input image is grayscale or 2D.
 
     """
+    # Optionally override parameters using kwargs
+    show_mask = kwargs.get('show_mask', show_mask)
+    expDir = kwargs.get('expDir', expDir)
+    saveName = kwargs.get('saveName', saveName)
+
     # for running in jupyter notebook
     pn.extension()
     hv.extension('bokeh')
@@ -327,14 +344,57 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True):
                 ax.set_title("ROI Mask")
                 output_pane.object = fig  # Update the output pane with the new plot
 
+    # Button to generate the mask
+    mask_button = pn.widgets.Button(name='Get ROI mask', button_type='primary')
+    mask_button.on_click(get_coords)
 
-    button = pn.widgets.Button(name='Get ROI mask', button_type='primary')
-    button.on_click(get_coords)
+    def save_mask(event):
+        if mask_output['mask'] is not None:
+            if expDir is not None:
+                savePath = os.path.join(expDir, f"{saveName}.joblib")
+                print(f"Save Path: {savePath}")
+            else:
+                print("Experiment directory not specified.")
+
+            # Backup existing file
+            if os.path.exists(savePath):
+                print("File existing in the same path.")
+                exist_files = glob(savePath.replace('.joblib', '_[0-9][0-9][0-9].joblib'))
+
+                # Increment the maximum sequence number by 1 as backup path
+                # seq_list = []
+                # for file in exist_files:
+                #     seqNum = re.search(r"_(\d{3})\.joblib$", file)
+                #     seq_list.append(int(seqNum.group(1)))
+                # seq_max = max(seq_list) if seq_list else 0
+                seq_numbers = [
+                    int(match.group(1)) for f in exist_files if (match := re.search(r"_(\d{3})\.joblib$", f))
+                ]
+                seq_max = max(seq_numbers) if seq_numbers else 0
+
+                backupPath = savePath.replace('.joblib', f"_{seq_max + 1:03}.joblib")
+                os.rename(savePath, backupPath)
+                print(f"Existing files backed up to: {backupPath}")
+                         
+            # Save the new mask
+            try:
+                joblib.dump(mask_output['mask'], savePath)
+                print(f"Mask saved successfully to: {savePath}")
+            except Exception as e:
+                print(f"Failed to save mask: {e}")
+        else:
+            print("No mask to save.")
+    
+    # Button to save the mask
+    save_button = pn.widgets.Button(name='Save ROI mask', button_type='success', disabled=(expDir is None))
+    save_button.on_click(save_mask)
+
+    # Create the Panel layout
+    layout = pn.Column(plot, pn.Row(mask_button, save_button), output_pane)
 
     # Return the Panel layout and allow access to the mask
     # return pn.Column(plot, button), mask_output
-    return pn.Column(plot, button, output_pane), mask_output
-
+    return layout, mask_output
 
 
 def qcams2roiTrace(qcams: list, baseline : bool = False, **kwargs):
@@ -352,6 +412,7 @@ def qcams2roiTrace(qcams: list, baseline : bool = False, **kwargs):
                                     - 'True': Interactive UI for ROI drawing is the spatial baseline fluorescence heatmap.
                                     - 'False': Interactive UI for ROI drawing is the spatial dFF response heatmap.
                                     Defaults to 'False'.
+        **kwargs: Optional key word arguments.
 
     Returns:
         tuple:
@@ -359,7 +420,6 @@ def qcams2roiTrace(qcams: list, baseline : bool = False, **kwargs):
             - mask_output (dict): A dictionary containing the binary mask of the drawn ROI.
             - imgs (numpy.ndarray): A 3D NumPy array of images extracted from the qcam files.
             - spatialDFF (numpy.ndarray): The spatial dFF response or baseline fluorescence (if baseline == True) for the average image series.
-            - **kwargs: Optional key word arguments.
 
     Notes:
         - The function assumes that the qcam files are in a format supported by `qcams2imgs` for image extraction.
@@ -386,7 +446,7 @@ def qcams2roiTrace(qcams: list, baseline : bool = False, **kwargs):
         spatialDFF = calcSpatialBaseFluo(avgImgSeries, **kwargs)
     else:
         spatialDFF = calcSpatialDFFresp(avgImgSeries, **kwargs)
-    ui, mask_output = getROImaskUI(spatialDFF)
+    ui, mask_output = getROImaskUI(spatialDFF, **kwargs)
 
     return ui, mask_output, np.array(imgs), spatialDFF
 
