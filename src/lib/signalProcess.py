@@ -61,14 +61,17 @@ def butterFilter(signal: np.ndarray,
     return filtfilt(b,a,signal)
 
 
-def subtractLinFit(t, signal: np.ndarray) -> np.ndarray:
+def subtractLinFit(t, signal: np.ndarray, offset: bool = True, **kwargs) -> np.ndarray:
     """
     Subtracts linear fit of signal from signal. 
     Useful to remove consistent signal drift in one direction.
 
     Args:
-        t (list or array): time vector (in seconds)
-        signal (numpy array): signal array
+        t (list or array): time vector (in seconds).
+        signal (numpy array): signal array.
+        offset (bool, optional): whether to add baseline fluorescence (f0) back to the corrected signal as the offset.
+                                Defaults to 'True'.
+    
     Returns:
         filtered_signal (numpy array): signal array after removal of linear fit
     """
@@ -76,46 +79,67 @@ def subtractLinFit(t, signal: np.ndarray) -> np.ndarray:
     X = np.vstack([t, np.ones(len(t))]).T
     slope,intercept = np.linalg.lstsq(X,signal, rcond=None)[0]
 
-    return signal-(t*slope+intercept),slope,intercept
+    if offset:
+        # baseline fluorescence is added to bring corrected y-values back to approximately the same level of uncorrected ones
+        # required if dFF is calculated using the corrected signal after linear fit
+        f0 = getBaseResp(signal, t, **kwargs)[0]
+        return signal-(t*slope+intercept)+f0, slope, intercept
+    else:
+        # output (signal - linear fit) directly
+        # used to display how linear fit works
+        return signal-(t*slope+intercept), slope, intercept
 
 
 def getBaseResp(signal: np.ndarray, t: np.ndarray, 
                 t_base: tuple[float,float] = (2.2,2.9),
                 t_resp: tuple[float,float] = (3.0,3.15),
+                negResp: bool = False,
                 **kwargs) -> tuple[float,float]:
-        """
-        Extract average signal at t_base and max signal between t_resp.
+    """
+    Extract average signal at t_base and max signal between t_resp.
 
-        Args:
-            signal (numpy array): signal array of shape [traceNumber, frame] or [frame]
-            t (list or array): time vector (in seconds)
-            t_base: time window (in seconds) for baseline
-            t_resp: time window (in seconds) for response
-            **kwargs: Optional arguments that will override default.
+    Args:
+        signal (numpy array): signal array of shape [traceNumber, frame] or [frame].
+        t (list or array): time vector (in seconds).
+        t_base: time window (in seconds) for baseline.
+        t_resp: time window (in seconds) for response.
+        negResp (bool, optional): whether to extract max signal between t_resp in either direction.
+                                - 'True': Response with max absolute value is returned, whether positive or negative.
+                                - 'False': Only max positive response is returned.
+                                Defaults to 'False'.
+        **kwargs: Optional arguments that will override default.
 
-        Returns:
-            base (numpy array): average signal between t_base for each trace
-            resp (numpy array): max signal between t_resp for each trace
-        """
-        # Optionally override parameters using kwargs
-        t_base = kwargs.get('t_base',t_base)
-        t_resp = kwargs.get('t_resp',t_resp)
+    Returns:
+        base (numpy array): average signal between t_base for each trace.
+        resp (numpy array): max signal between t_resp for each trace.
+    """
 
-        base_indices = np.where((t >= t_base[0]) & (t <= t_base[1]))[0]
-        resp_indices = np.where((t >= t_resp[0]) & (t <= t_resp[1]))[0]
+    # Optionally override parameters using kwargs
+    t_base = kwargs.get('t_base',t_base)
+    t_resp = kwargs.get('t_resp',t_resp)
+    negResp = kwargs.get('negResp',negResp)
 
-        if signal.ndim == 1:
-            # If the signal is 1D, treat it as a single trace
-            base = signal[base_indices].mean()
-            resp = signal[resp_indices].max()
-        elif signal.ndim == 2:
-            # If the signal is 2D, process each trace
-            base = np.mean(signal[:, base_indices], axis=1)
-            resp = np.max(signal[:, resp_indices], axis=1)
+    base_indices = np.where((t >= t_base[0]) & (t <= t_base[1]))[0]
+    resp_indices = np.where((t >= t_resp[0]) & (t <= t_resp[1]))[0]
+
+    if signal.ndim == 1:
+        # If the signal is 1D, treat it as a single trace
+        base = signal[base_indices].mean()
+        if negResp:
+            resp = abs(signal[resp_indices]).max()
         else:
-            raise ValueError("Signal array must be 1D or 2D.")
+            resp = signal[resp_indices].max()
+    elif signal.ndim == 2:
+        # If the signal is 2D, process each trace
+        base = np.mean(signal[:, base_indices], axis=1)
+        if negResp:
+            resp = np.max(abs(signal[:, resp_indices], axis=1))
+        else:
+            resp = np.max(signal[:, resp_indices], axis=1)
+    else:
+        raise ValueError("Signal array must be 1D or 2D.")
         
-        return base, resp
+    return base, resp
 
 
 def dFFcalc(signal, **kwargs):
@@ -148,7 +172,9 @@ def dFFcalc(signal, **kwargs):
 
 def pkDFFimg(imgSeries: np.ndarray,
                 subLinFit: bool = True, 
-                butterFilt: bool = True, 
+                butterFilt: bool = False, 
+                absResp: bool = True, 
+                dFResp: bool = False, 
                 **kwargs):
     """
     Calculates peak dFF response from image series array.
@@ -157,12 +183,14 @@ def pkDFFimg(imgSeries: np.ndarray,
         imgSeries (array): array of shape (Y, X, frame)
         subLinFit (bool): whether to subtract fitted line
         butterFilt (bool): whether to apply low pass filter
+        absResp (bool): whether to calculate absolute response to avoid negative output
+        dFResp (bool): if true, calculate dF response rather than dFF
         **kwargs: Optional arguments that will override default.
-            example:  mask (np.ndarray): 2D binary mask array specifying the region of interest
-
+            example: ROImask (np.ndarray): 2D binary mask array specifying the region of interest
+                    negResp (bool): whether to extract absolute peak dFF response in either direction as 'pkResp'
 
     Returns:
-        pk (float): absolute peak of dFF response
+        pk (float): absolute peak of dFF or dF response
     """
     t = getTimeVec(imgSeries.shape[-1],**kwargs)
 
@@ -182,14 +210,22 @@ def pkDFFimg(imgSeries: np.ndarray,
     # baseline (f0) to be subtracted
     f0 = getBaseResp(signal, t, **kwargs)[0]
     
-    # calculate dFF
-    dFF = (signal-f0)/f0
+    # calculate dFF or dF response
+    if dFResp:
+        resp = signal-f0
+    else:
+        resp = (signal-f0)/f0
 
-    # get baseline and peak from dFF
-    pkBase,pkResp = getBaseResp(dFF, t, **kwargs)
+    # get baseline and peak from dFF or dF
+    pkBase, pkResp = getBaseResp(resp, t, **kwargs)
 
-    # gets response in either direction
-    pk = abs(pkResp-pkBase)
+    if absResp:
+        # avoid negative 'pk' value
+        # if negative response is also measured, add argument 'negResp=True'
+        pk = abs(pkResp-pkBase)
+    else:
+        # may result in negative 'pk' value
+        pk = pkResp-pkBase
 
     return pk
 
