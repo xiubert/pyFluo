@@ -93,7 +93,7 @@ def subtractLinFit(t, signal: np.ndarray, offset: bool = True, **kwargs) -> np.n
 def getBaseResp(signal: np.ndarray, t: np.ndarray, 
                 t_base: tuple[float,float] = (2.2,2.9),
                 t_resp: tuple[float,float] = (3.0,3.15),
-                negResp: bool = False,
+                negResp: bool = True,
                 **kwargs) -> tuple[float,float]:
     """
     Extract average signal at t_base and max signal between t_resp.
@@ -105,13 +105,17 @@ def getBaseResp(signal: np.ndarray, t: np.ndarray,
         t_resp: time window (in seconds) for response.
         negResp (bool, optional): whether to extract max signal between t_resp in either direction.
                                 - 'True': Response with max absolute value is returned, whether positive or negative.
+                                          Orginal sign of the response is preserved.
                                 - 'False': Only max positive response is returned.
-                                Defaults to 'False'.
+                                Defaults to 'True'.
         **kwargs: Optional arguments that will override default.
 
     Returns:
         base (numpy array): average signal between t_base for each trace.
         resp (numpy array): max signal between t_resp for each trace.
+
+    Notes:
+        If negative response is calculated, 'negResp = True' only works for dFF response but not raw F.
     """
 
     # Optionally override parameters using kwargs
@@ -122,19 +126,28 @@ def getBaseResp(signal: np.ndarray, t: np.ndarray,
     base_indices = np.where((t >= t_base[0]) & (t <= t_base[1]))[0]
     resp_indices = np.where((t >= t_resp[0]) & (t <= t_resp[1]))[0]
 
+    # To do: threshold (Avg ± 2 SD) should be set to exclude spontaneous activities
     if signal.ndim == 1:
         # If the signal is 1D, treat it as a single trace
         base = signal[base_indices].mean()
         if negResp:
-            resp = abs(signal[resp_indices]).max()
+            # find the response with the max absolute value and keep its original sign
+            resp_values = signal[resp_indices]
+            resp = resp_values[np.argmax(np.abs(resp_values))]
         else:
+            # find the response with the max numeric value
+            # may ignore negative response
             resp = signal[resp_indices].max()
     elif signal.ndim == 2:
         # If the signal is 2D, process each trace
         base = np.mean(signal[:, base_indices], axis=1)
         if negResp:
-            resp = np.max(abs(signal[:, resp_indices], axis=1))
+            # in each trace, find the responses with the max absolute values and keep their original signs
+            resp_values = signal[:, resp_indices]
+            resp = resp_values[np.arange(resp_values.shape[0]), np.argmax(np.abs(resp_values), axis=1)]
         else:
+            # in each trace, find the responses with the max numeric values
+            # may ignore negative responses
             resp = np.max(signal[:, resp_indices], axis=1)
     else:
         raise ValueError("Signal array must be 1D or 2D.")
@@ -173,7 +186,6 @@ def dFFcalc(signal, **kwargs):
 def pkDFFimg(imgSeries: np.ndarray,
                 subLinFit: bool = True, 
                 butterFilt: bool = False, 
-                absResp: bool = True, 
                 dFResp: bool = False, 
                 **kwargs):
     """
@@ -183,15 +195,15 @@ def pkDFFimg(imgSeries: np.ndarray,
         imgSeries (array): array of shape (Y, X, frame)
         subLinFit (bool): whether to subtract fitted line
         butterFilt (bool): whether to apply low pass filter
-        absResp (bool): whether to calculate absolute response to avoid negative output
         dFResp (bool): if true, calculate dF response rather than dFF
         **kwargs: Optional arguments that will override default.
             example: ROImask (np.ndarray): 2D binary mask array specifying the region of interest
-                    negResp (bool): whether to extract absolute peak dFF response in either direction as 'pkResp'
+                     negResp (bool): whether to extract peak dFF response in either direction (original signal preserved) as 'pkResp'
 
     Returns:
-        pk (float): absolute peak of dFF or dF response
+        pk (float): peak dFF or dF response
     """
+    
     t = getTimeVec(imgSeries.shape[-1],**kwargs)
 
     ROImask = kwargs.get('ROImask',np.ones(imgSeries.shape[:2]))
@@ -219,13 +231,8 @@ def pkDFFimg(imgSeries: np.ndarray,
     # get baseline and peak from dFF or dF
     pkBase, pkResp = getBaseResp(resp, t, **kwargs)
 
-    if absResp:
-        # avoid negative 'pk' value
-        # if negative response is also measured, add argument 'negResp=True'
-        pk = abs(pkResp-pkBase)
-    else:
-        # may result in negative 'pk' value
-        pk = pkResp-pkBase
+    # calculate peak dFF reponse
+    pk = pkResp-pkBase
 
     return pk
 
