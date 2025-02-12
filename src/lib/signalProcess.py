@@ -75,6 +75,8 @@ def subtractLinFit(t, signal: np.ndarray, offset: bool = True, **kwargs) -> np.n
     Returns:
         filtered_signal (numpy array): signal array after removal of linear fit
     """
+    # Optionally override parameters using kwargs
+    offset = kwargs.get('offset',offset)
     
     X = np.vstack([t, np.ones(len(t))]).T
     slope,intercept = np.linalg.lstsq(X,signal, rcond=None)[0]
@@ -211,7 +213,7 @@ def pkDFFimg(imgSeries: np.ndarray,
     
     # whether to subtract fitted line
     if subLinFit:
-        signal = subtractLinFit(t,signal)[0]
+        signal = subtractLinFit(t, signal, **kwargs)[0]
 
     # whether to apply low pass filter
     if butterFilt:
