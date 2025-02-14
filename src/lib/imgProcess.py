@@ -276,29 +276,29 @@ def getSquareMask(Xcoor: float, Ycoor: float, width: float, height: float,
         - The contour array (`ROIcontour`) ensures the shape is closed by repeating the first vertex.
     """
     
-    if width > 0 and height > 0:
-        # Calculate vertex coordinates based on width, height, and angle
-        if 0 < angle < 180:
-            if X_parallel:
-                # If the top and bottom sides are parallel to the X-axis
-                shift_x = height/math.tan(math.radians(angle))
-                points = [(Xcoor, Ycoor),
-                          (Xcoor + width, Ycoor),
-                          (Xcoor + width + shift_x, Ycoor + height),
-                          (Xcoor + shift_x, Ycoor + height)]
-            else:
-                # If the left and right sides are parallel to the Y-axis
-                shift_y = width/math.tan(math.radians(angle))
-                points = [(Xcoor, Ycoor),
-                          (Xcoor + width, Ycoor + shift_y),
-                          (Xcoor + width, Ycoor + height + shift_y),
-                          (Xcoor, Ycoor + height)]
-        else:
-            # Raise error for invalid angle degrees
-            raise ValueError("`angle` must be between 0 and 180 degrees.")
-    else:
-        # Raise error for negative values of width or height
+    # Raise error for negative values of width or height
+    if width <= 0 or height <= 0:
         raise ValueError("`width` and `height` must be positive values.")
+    
+    # Raise error for invalid angle degrees
+    if not (0 < angle < 180):
+        raise ValueError("`angle` must be between 0 and 180 degrees.")
+
+    # Calculate vertex coordinates based on width, height, and angle
+    if X_parallel:
+        # If the top and bottom sides are parallel to the X-axis
+        shift_x = height/math.tan(math.radians(angle))
+        points = [(Xcoor, Ycoor),
+                  (Xcoor + width, Ycoor),
+                  (Xcoor + width + shift_x, Ycoor + height),
+                  (Xcoor + shift_x, Ycoor + height)]
+    else:
+        # If the left and right sides are parallel to the Y-axis
+        shift_y = width/math.tan(math.radians(angle))
+        points = [(Xcoor, Ycoor),
+                  (Xcoor + width, Ycoor + shift_y),
+                  (Xcoor + width, Ycoor + height + shift_y),
+                  (Xcoor, Ycoor + height)]
     
     # Create binary mask from vertex coordinates
     mask = polygon2mask(points, **kwargs)
