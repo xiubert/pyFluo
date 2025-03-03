@@ -525,7 +525,7 @@ def qcams2roiTrace(qcams: list, baseline : bool = False, **kwargs):
         tuple:
             - UI: An interactive Panel layout for drawing an ROI on the spatial dFF response or baseline fluorescence.
             - mask_output (dict): A dictionary containing the binary mask of the drawn ROI.
-            - imgs (numpy.ndarray): A 4D NumPy array of images extracted from the qcam files of shape [file, trace, Y, X, frame].
+            - imgs (numpy.ndarray): A 4D NumPy array of images extracted from the qcam files of shape [trace, Y, X, frame].
             - spatialDFF (numpy.ndarray): The spatial dFF response or baseline fluorescence (if baseline == True) for the average image series.
 
     Notes:
