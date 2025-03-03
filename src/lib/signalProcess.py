@@ -24,6 +24,7 @@ def getTimeVec(nFrames: int,
     # Optionally override parameters using kwargs
     frameRate = kwargs.get('frameRate', frameRate)
     zeroStart = kwargs.get('zeroStart', zeroStart)
+    delayAdjust = kwargs.get('delayAdjust', delayAdjust)
 
     # first frame acquired (1/fr) s after start
     t = (np.arange(1, nFrames + 1) * (1 / frameRate)) + delayAdjust
