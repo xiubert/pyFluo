@@ -1,6 +1,7 @@
 from scipy.signal import butter, filtfilt
 import numpy as np
 from typing import Tuple
+import warnings
 
 
 def getTimeVec(nFrames: int, 
@@ -44,9 +45,9 @@ def butterFilter(signal: np.ndarray,
 
     Args:
         signal (numpy array): signal array to be filtered
-        sampleFreq (int): sampling frequency of the signal
-        cutoff_freq: filter cutoff frequency
-        order: filter order ('steepness' of signal drop-off at cutoff_freq)
+        sample_freq (int): sampling frequency of the signal
+        cutoff_freq (float): filter cutoff frequency
+        order (int): filter order ('steepness' of signal drop-off at cutoff_freq)
         **kwargs: Optional arguments that will override default.
 
     Returns:
@@ -56,6 +57,7 @@ def butterFilter(signal: np.ndarray,
     # Optionally override parameters using kwargs
     sample_freq = kwargs.get('sample_freq', sample_freq)
     cutoff_freq = kwargs.get('cutoff_freq', cutoff_freq)
+    order = kwargs.get('order', order)
 
     b, a = butter(order, cutoff_freq/(sample_freq/2), 'lowpass') 
 
@@ -186,11 +188,165 @@ def dFFcalc(signal, **kwargs):
     return dFF,dF,f0
      
 
+def is_valid_resp(imgSeries: np.ndarray, subLinFit: bool = True, dFResp: bool = False, 
+                  t_base: tuple[float,float] = (2,3), t_resp_excl: tuple[float,float] = (3.3,4), **kwargs) -> bool:
+    """
+    Checks whether the response is a negative outlier.
+    Negative outliers refer to traces whose Avg response is 3 SDs below Avg baseline or peak response is below 0.
+
+    Args:
+        imgSeries (array): array of shape (Y, X, frame)
+        subLinFit (bool): whether to subtract fitted line
+        dFResp (bool): if true, calculate dF response rather than dFF
+        t_base (tuple): time window (in seconds) for baseline
+        t_resp_excl (tuple): time window (in seconds) to exclude outliers (negative response)
+        **kwargs: Optional arguments that will override default
+            example: ROImask (np.ndarray): 2D binary mask array specifying the region of interest
+
+    Returns:
+        is_valid (bool): `True` for positive response (non-outlier), `False` for negative response (outlier)
+
+    Notes:
+        - Usually `t_resp_excl` time window should be no longer than response window to avoid removing any non-outlier traces.
+    """
+    
+    # optionally override parameters using kwargs
+    subLinFit = kwargs.get('subLinFit',subLinFit)
+    dFResp = kwargs.get('dFResp',dFResp)
+    t_base = kwargs.get('t_base',t_base)
+    t_resp_excl = kwargs.get('t_resp_excl',t_resp_excl)
+
+    # get time vector
+    t = getTimeVec(imgSeries.shape[-1], **kwargs)
+
+    # calculate response within ROI if provided
+    ROImask = kwargs.get('ROImask', np.ones(imgSeries.shape[:2]))
+    signal = imgSeries[ROImask==1, :].mean(axis=0)
+    
+    # whether to subtract fitted line
+    if subLinFit:
+        signal = subtractLinFit(t, signal, **kwargs)[0]
+    else:
+        # photo-bleaching may cause unnecessary exclusion
+        warnings.warn("Linear fit subtraction is suggested before excluding outliers.")
+
+    # baseline (f0) to be subtracted
+    f0 = getBaseResp(signal, t, t_base=t_base, **kwargs)[0]
+    
+    # calculate dFF or dF response
+    resp = (signal - f0) if dFResp else (signal - f0) / f0
+
+    # get time windows for baseline and response
+    base_indices = np.where((t >= t_base[0]) & (t <= t_base[1]))[0]
+    resp_indices = np.where((t >= t_resp_excl[0]) & (t <= t_resp_excl[1]))[0]
+    
+    # equivalent to comparing by raw F (`signal`), as baseline F (f0) is consistently positive
+    avgResp = resp[resp_indices].mean()
+    maxResp = resp[resp_indices].max()
+    meanBase = resp[base_indices].mean()
+    baseSD = resp[base_indices].std()
+
+    # traces whose Avg response is 3 SDs below Avg baseline are extreme outliers even if no sound is played
+    # if maxResp < meanBase, peak dFF response is negative -> makes no sense
+    is_valid = (avgResp >= meanBase - 3*baseSD) and (maxResp >= meanBase)
+
+    return is_valid
+
+
+def is_significant_resp(imgSeries: np.ndarray, subLinFit: bool = True, dFResp: bool = False, 
+                        t_base: tuple[float,float] = (2,3), t_resp: tuple[float,float] = (3.3,4), 
+                        butterFilt: bool = True, bidirect: bool = True, thres_2SD: bool = False, **kwargs) -> bool:
+    """
+    Checks whether the response is significant.
+    Insigificant response refers to traces whose max response (and min response) is within 3 SDs (2 SDs) range of Avg baseline.
+
+    Args:
+        imgSeries (array): array of shape (Y, X, frame)
+        subLinFit (bool): whether to subtract fitted line
+        dFResp (bool): if true, calculate dF response rather than dFF
+        t_base (tuple): time window (in seconds) for baseline
+        t_resp (tuple): time window (in seconds) for response
+        butterFilt (bool): whether to apply low pass filter
+        bidirect (bool): whether to check response significance in both directions
+                         if false, assume positive response and test by the positive threshold only
+        thres_2SD (bool): if true, thresholds are set 2 SDs from Avg baseline rather than 3 SDs
+        **kwargs: Optional arguments that will override default
+            example: ROImask (np.ndarray): 2D binary mask array specifying the region of interest
+                     cutoff_freq (float): low-pass filter cutoff frequency
+
+    Returns:
+        is_significant (bool): `True` for significant response, `False` for insignificant response
+    """
+    
+    # optionally override parameters using kwargs
+    subLinFit = kwargs.get('subLinFit',subLinFit)
+    dFResp = kwargs.get('dFResp',dFResp)
+    t_base = kwargs.get('t_base',t_base)
+    t_resp = kwargs.get('t_resp',t_resp)
+    butterFilt = kwargs.get('butterFilt',butterFilt)
+    bidirect = kwargs.get('bidirect',bidirect)
+    thres_2SD = kwargs.get('thres_2SD',thres_2SD)
+
+    # get time vector
+    t = getTimeVec(imgSeries.shape[-1], **kwargs)
+
+    # calculate response within ROI if provided
+    ROImask = kwargs.get('ROImask', np.ones(imgSeries.shape[:2]))
+    signal = imgSeries[ROImask==1, :].mean(axis=0)
+
+    # whether to subtract fitted line
+    if subLinFit:
+        signal = subtractLinFit(t, signal, **kwargs)[0]
+    else:
+        # photo-bleaching may cause bias
+        warnings.warn("Linear fit subtraction is suggested before testing insignificant responses.")
+
+    # whether to apply low pass filter
+    if butterFilt:
+        # Default cutoff_freq = 2
+        # cutoff_freq = kwargs.get('cutoff_freq', 2)
+        # signal = butterFilter(signal, cutoff_freq=cutoff_freq)
+        signal = butterFilter(signal, **kwargs)
+
+    # baseline (f0) to be subtracted
+    f0 = getBaseResp(signal, t, t_base=t_base, t_resp=t_resp, **kwargs)[0]
+    
+    # calculate dFF or dF response
+    resp = (signal - f0) if dFResp else (signal - f0) / f0
+
+    # get time windows for baseline and response
+    base_indices = (t >= t_base[0]) & (t <= t_base[1])
+    resp_indices = (t >= t_resp[0]) & (t <= t_resp[1])
+
+    # equivalent to comparing by raw F (`signal`) as baseline F (f0) is consistently positive
+    maxResp = resp[resp_indices].max()
+    minResp = resp[resp_indices].min()
+    meanBase = resp[base_indices].mean()
+    baseSD = resp[base_indices].std()
+
+    # set threshold
+    thres = 2*baseSD if thres_2SD else 3*baseSD
+
+    # compare max response to upper threshold (Avg+3SD) and min dFF response to lower threshold (Avg-3SD)
+    if bidirect:
+        # test significance in both directions
+        is_significant = (maxResp > meanBase + thres) or (minResp < meanBase - thres)
+    else:
+        # only consider positive response
+        is_significant = maxResp > meanBase + thres
+
+    return is_significant
+
+
 def pkDFFimg(imgSeries: np.ndarray,
                 subLinFit: bool = True, 
-                butterFilt: bool = False, 
+                butterFilt: bool = True, 
                 dFResp: bool = False, 
-                **kwargs):
+                negExcl: bool = True, 
+                insigExcl: bool = False, 
+                sponCorrect: bool = False, 
+                t_base: tuple[float,float] = (2,3), 
+                **kwargs) -> float | None:
     """
     Calculates peak dFF response from image series array.
     
@@ -199,43 +355,69 @@ def pkDFFimg(imgSeries: np.ndarray,
         subLinFit (bool): whether to subtract fitted line
         butterFilt (bool): whether to apply low pass filter
         dFResp (bool): if true, calculate dF response rather than dFF
-        **kwargs: Optional arguments that will override default.
+        negExcl (bool): if true, exclude outliers whose Avg responses (within response time window) are 3 SDs below Avg baseline, 
+                        or whose max responses are below Avg baseline
+        insigExcl (bool): if true, convert insignificant traces whose max and min responses are within ±3 SDs of Avg baseline to 0
+        sponCorrect (bool): Used to correct for spontaneous activities or noise
+                            if true, substract max spontaneous response (within baseline time window) from peak dFF response (within response time window)
+        t_base (tuple): time window (in seconds) for baseline
+        **kwargs: Optional arguments that will override default
             example: ROImask (np.ndarray): 2D binary mask array specifying the region of interest
-                     negResp (bool): whether to extract peak dFF response in either direction (original signal preserved) as 'pkResp'
+                     cutoff_freq (float): low-pass filter cutoff frequency
 
     Returns:
-        pk (float): peak dFF or dF response
+        pk (float or `None`): peak dFF or dF response
     """
     
-    t = getTimeVec(imgSeries.shape[-1],**kwargs)
+    # add explicit arguments to kwargs
+    kwargs['subLinFit'] = subLinFit
+    kwargs['butterFilt'] = butterFilt
+    kwargs['dFResp'] = dFResp
+    kwargs['t_base'] = t_base
 
-    ROImask = kwargs.get('ROImask',np.ones(imgSeries.shape[:2]))
-    signal = imgSeries[ROImask==1,:].mean(axis=0)
+    # check for negative response
+    # if `negExcl` is true, return `None`
+    if negExcl and not is_valid_resp(imgSeries, **kwargs):
+        return None
+
+    # check for insignificant response
+    # if `insigExcl` is true, return `0`
+    if insigExcl and not is_significant_resp(imgSeries, **kwargs):
+        return 0
+
+    t = getTimeVec(imgSeries.shape[-1], **kwargs)
+    ROImask = kwargs.get('ROImask', np.ones(imgSeries.shape[:2]))
+    signal = imgSeries[ROImask==1, :].mean(axis=0)
     
     # whether to subtract fitted line
     if subLinFit:
         signal = subtractLinFit(t, signal, **kwargs)[0]
-
+    
     # whether to apply low pass filter
     if butterFilt:
-        # cutoff_freq = kwargs.get('cutoff_freq', 4)  # Default cutoff_freq = 4
+        # Default cutoff_freq = 2
+        # cutoff_freq = kwargs.get('cutoff_freq', 2)
         # signal = butterFilter(signal, cutoff_freq=cutoff_freq)
         signal = butterFilter(signal, **kwargs)
-    
+
     # baseline (f0) to be subtracted
     f0 = getBaseResp(signal, t, **kwargs)[0]
     
     # calculate dFF or dF response
-    if dFResp:
-        resp = signal-f0
-    else:
-        resp = (signal-f0)/f0
+    resp = (signal - f0) if dFResp else (signal - f0) / f0
 
     # get baseline and peak from dFF or dF
-    pkBase, pkResp = getBaseResp(resp, t, **kwargs)
-
+    pkBase_output, pkResp_output = getBaseResp(resp, t, **kwargs)
+    
     # calculate peak dFF reponse
-    pk = pkResp-pkBase
+    pk = pkResp_output - pkBase_output
+    
+    # correct for spontaneous activities or noise if `sponCorrect` is true
+    if sponCorrect:
+        # substract the max amplitude within baseline time window from the peak dFF response
+        base_indices = np.where((t >= t_base[0]) & (t <= t_base[1]))[0]
+        maxSpon = resp[base_indices].max() - pkBase_output
+        pk -= maxSpon
 
     return pk
 
