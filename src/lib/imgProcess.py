@@ -579,8 +579,8 @@ def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF: np.ndarray = None
     ax[0,0].imshow(imgs.mean(axis=(0,3)),cmap='gray')
     heatmapImg = ax[0,1].imshow(spatialDFF,cmap='jet')
     if isinstance(ROIcontour,np.ndarray):
-        ax[0,0].plot(ROIcontour[:, 0], ROIcontour[:, 1], color='white', linewidth=2)
-        ax[0,1].plot(ROIcontour[:, 0], ROIcontour[:, 1], color='black', linewidth=2)
+        ax[0,0].plot(ROIcontour[:, 0], ROIcontour[:, 1], color='w', linewidth=2)
+        ax[0,1].plot(ROIcontour[:, 0], ROIcontour[:, 1], color='w', linewidth=2)
     plt.colorbar(heatmapImg)
     
     # raw F over entire image
@@ -607,7 +607,7 @@ def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF: np.ndarray = None
     ax[2,1].set_xlabel('time (s)')
 
     plt.tight_layout()
-    fig.show()
+    plt.show()
 
     return ROItrace
 
