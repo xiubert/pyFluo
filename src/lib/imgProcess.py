@@ -604,17 +604,17 @@ def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF: np.ndarray = None
     plt.colorbar(heatmapImg)
     
     # raw F over entire image
-    ax[1,0].plot(t, overalltrace)
+    ax[1,0].plot(t, overalltrace, 'r')
     if errBar:
         # add error bar across traces
-        ax[1,0].fill_between(t, overalltrace_msem, overalltrace_psem, color='r', alpha=0.1)
+        ax[1,0].fill_between(t, overalltrace_msem, overalltrace_psem, color='b', alpha=0.1)
     ax[1,0].set_xlabel('time (s)')
     ax[1,0].set_ylabel('raw F (full img)')
     
     # raw F within ROI
-    ax[1,1].plot(t, ROItrace)
+    ax[1,1].plot(t, ROItrace, 'r')
     if errBar:
-        ax[1,1].fill_between(t, ROItrace_msem, ROItrace_psem, color='r', alpha=0.1)
+        ax[1,1].fill_between(t, ROItrace_msem, ROItrace_psem, color='b', alpha=0.1)
     ax[1,1].set_title('roi')
     ax[1,1].set_xlabel('time (s)')
     ax[1,1].set_ylabel('raw F (ROI)')
@@ -623,17 +623,17 @@ def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF: np.ndarray = None
     dFF, dF, _ = dFFcalc(ROIimg, **kwargs)
     uDF, uDFpsem, uDFmsem = meanPlusMinusSem(dF)
     uDFF, uDFFpsem, uDFFmsem = meanPlusMinusSem(dFF)
-    ax[2,0].plot(t, uDF)
+    ax[2,0].plot(t, uDF, 'r')
     ax[2,0].set_title('roi')
     ax[2,0].set_xlabel('time (s)')
     ax[2,0].set_ylabel('dF (ROI)')
-    ax[2,1].plot(t, uDFF)
+    ax[2,1].plot(t, uDFF, 'r')
     ax[2,1].set_title('roi')
     ax[2,1].set_ylabel('dFF (ROI)')
     ax[2,1].set_xlabel('time (s)')
     if errBar:
-        ax[2,0].fill_between(t, uDFmsem, uDFpsem, color='r', alpha=0.1)
-        ax[2,1].fill_between(t, uDFFmsem, uDFFpsem, color='r', alpha=0.1)
+        ax[2,0].fill_between(t, uDFmsem, uDFpsem, color='b', alpha=0.1)
+        ax[2,1].fill_between(t, uDFFmsem, uDFFpsem, color='b', alpha=0.1)
 
     plt.tight_layout()
     plt.show()
