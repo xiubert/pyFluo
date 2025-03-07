@@ -14,7 +14,7 @@ import holoviews as hv
 import panel as pn
 from matplotlib.path import Path
 
-from lib.signalProcess import butterFilter, getTimeVec, dFFcalc
+from lib.signalProcess import butterFilter, getTimeVec, dFFcalc, subtractLinFit, meanPlusMinusSem
 from lib.fileIngest import extract_qcamraw, qcams2imgs
 
 
@@ -558,7 +558,8 @@ def qcams2roiTrace(qcams: list, baseline : bool = False, **kwargs):
     return ui, mask_output, np.array(imgs), spatialDFF
 
 
-def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF: np.ndarray = None, ROIcontour: np.ndarray = None, **kwargs):
+def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF: np.ndarray = None, ROIcontour: np.ndarray = None, 
+               subLinFit: bool = True, butterFilt: bool = True, errBar: bool = True, **kwargs):
     """
     Applies mask (of shape [Y, X]) to array of images of shape [trace, Y, X, frame]
     and returns average rawF within ROI across frames in array of shape [trace, frame]
@@ -568,14 +569,33 @@ def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF: np.ndarray = None
         imgs (numpy array): array of images of shape [trace, Y, X, frame]
         spatialDFF (numpy array): Spatial dFF response, shape [Y, X]
         ROIcontour (numpy array): [X, Y] coordinates of ROI
-        kwargs: optional arguments for flexibility.
+        subLinFit (bool, optional): whether to subtract fitted line for each trace before averaging
+        butterFilt (bool, optional): whether to apply low-pass filter for each trace before averaging
+        errBar (bool, optional): whether to display error bars for curves
+        kwargs: optional arguments for flexibility
+            example: cutoff_freq (float): low-pass filter cutoff frequency
+
     Returns:
-        ROITrace (numpy array): average fluorescence within ROI for each trace (shape: [trace, frame])
+        ROIimg (numpy array): average fluorescence within ROI for each trace (shape: [trace, frame])
     """
     
     t = getTimeVec(imgs.shape[-1], **kwargs)
-    ROItrace = imgs[:,mask==1,:].mean(axis=1)
-    fig,ax = plt.subplots(3,2,figsize=(12,8))
+    
+    # # calculate average fluorescence over entire image
+    # optionally apply linear fit subtraction
+    overallimg = subtractLinFit(t, imgs.mean(axis=(1,2)), **kwargs)[0] if subLinFit else imgs.mean(axis=(1,2))
+    # optionally apply low-pass filter
+    overallimg = butterFilter(overallimg, **kwargs) if butterFilt else overallimg
+    overalltrace, overalltrace_psem, overalltrace_msem = meanPlusMinusSem(overallimg)
+
+    # # calculate average fluorescence within ROI
+    # optionally apply linear fit subtraction
+    ROIimg = subtractLinFit(t, imgs[:,mask==1,:].mean(axis=1), **kwargs)[0] if subLinFit else imgs[:,mask==1,:].mean(axis=1)
+    # optionally apply low-pass filter
+    ROIimg = butterFilter(ROIimg, **kwargs) if butterFilt else ROIimg
+    ROItrace, ROItrace_psem, ROItrace_msem = meanPlusMinusSem(ROIimg)
+
+    fig, ax = plt.subplots(3,2,figsize=(12,8))
     ax[0,0].imshow(imgs.mean(axis=(0,3)),cmap='gray')
     heatmapImg = ax[0,1].imshow(spatialDFF,cmap='jet')
     if isinstance(ROIcontour,np.ndarray):
@@ -584,32 +604,41 @@ def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF: np.ndarray = None
     plt.colorbar(heatmapImg)
     
     # raw F over entire image
-    ax[1,0].plot(t,imgs.mean(axis=(0,1,2)))
+    ax[1,0].plot(t, overalltrace)
+    if errBar:
+        # add error bar across traces
+        ax[1,0].fill_between(t, overalltrace_msem, overalltrace_psem, color='r', alpha=0.1)
     ax[1,0].set_xlabel('time (s)')
     ax[1,0].set_ylabel('raw F (full img)')
     
     # raw F within ROI
-    ax[1,1].plot(t,ROItrace.mean(axis=(0)))
+    ax[1,1].plot(t, ROItrace)
+    if errBar:
+        ax[1,1].fill_between(t, ROItrace_msem, ROItrace_psem, color='r', alpha=0.1)
     ax[1,1].set_title('roi')
     ax[1,1].set_xlabel('time (s)')
     ax[1,1].set_ylabel('raw F (ROI)')
 
-    
-    # dF and dFF
-    dFF,dF,_ = dFFcalc(ROItrace.mean(axis=(0)),**kwargs)
-    ax[2,0].plot(t,dF)
+    # dF and dFF within ROI
+    dFF, dF, _ = dFFcalc(ROIimg, **kwargs)
+    uDF, uDFpsem, uDFmsem = meanPlusMinusSem(dF)
+    uDFF, uDFFpsem, uDFFmsem = meanPlusMinusSem(dFF)
+    ax[2,0].plot(t, uDF)
     ax[2,0].set_title('roi')
     ax[2,0].set_xlabel('time (s)')
     ax[2,0].set_ylabel('dF (ROI)')
-    ax[2,1].plot(t,dFF)
+    ax[2,1].plot(t, uDFF)
     ax[2,1].set_title('roi')
     ax[2,1].set_ylabel('dFF (ROI)')
     ax[2,1].set_xlabel('time (s)')
+    if errBar:
+        ax[2,0].fill_between(t, uDFmsem, uDFpsem, color='r', alpha=0.1)
+        ax[2,1].fill_between(t, uDFFmsem, uDFFpsem, color='r', alpha=0.1)
 
     plt.tight_layout()
     plt.show()
 
-    return ROItrace
+    return ROIimg
 
 
 def getROImask(imgPath: str = None,

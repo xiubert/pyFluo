@@ -44,14 +44,14 @@ def butterFilter(signal: np.ndarray,
     Simple helper function for a lowpass butterworth filter.
 
     Args:
-        signal (numpy array): signal array to be filtered
+        signal (numpy array): 1D or 2D signal array to be filtered of shape [frame] or [traceNumber, frame]
         sample_freq (int): sampling frequency of the signal
         cutoff_freq (float): filter cutoff frequency
         order (int): filter order ('steepness' of signal drop-off at cutoff_freq)
         **kwargs: Optional arguments that will override default.
 
     Returns:
-        filtered_signal (numpy array): lowpass filtered signal
+        filtered_signal (numpy array): lowpass filtered signal (same shape as input signal)
 
     """
     # Optionally override parameters using kwargs
@@ -61,7 +61,19 @@ def butterFilter(signal: np.ndarray,
 
     b, a = butter(order, cutoff_freq/(sample_freq/2), 'lowpass') 
 
-    return filtfilt(b,a,signal)
+    if signal.ndim == 1:
+        # If the signal is 1D, treat it as a single trace
+        filtered_signal = filtfilt(b, a, signal)
+    elif signal.ndim == 2:
+        # If the signal is 2D, process each trace (row) independently
+        # Initialize the output array
+        filtered_signal = np.zeros_like(signal)
+        for i in range(signal.shape[0]):
+            filtered_signal[i, :] = filtfilt(b, a, signal[i, :])
+    else:
+        raise ValueError("Signal array must be 1D or 2D.")
+    
+    return filtered_signal
 
 
 def subtractLinFit(t, signal: np.ndarray, offset: bool = True, **kwargs) -> np.ndarray:
@@ -71,28 +83,61 @@ def subtractLinFit(t, signal: np.ndarray, offset: bool = True, **kwargs) -> np.n
 
     Args:
         t (list or array): time vector (in seconds).
-        signal (numpy array): signal array.
+        signal (numpy array): 1D or 2D signal array of shape [frame] or [traceNumber, frame].
         offset (bool, optional): whether to add baseline fluorescence (f0) back to the corrected signal as the offset.
                                 Defaults to 'True'.
     
     Returns:
-        filtered_signal (numpy array): signal array after removal of linear fit
+        corrected_signal (numpy array): signal array after removal of linear fit (same shape as input signal).
+        slope (numpy array): array of slopes for each trace (1D or scalar for 1D input).
+        intercept (numpy array): array of intercepts for each trace (1D or scalar for 1D input).
     """
+
     # Optionally override parameters using kwargs
     offset = kwargs.get('offset',offset)
     
-    X = np.vstack([t, np.ones(len(t))]).T
-    slope,intercept = np.linalg.lstsq(X,signal, rcond=None)[0]
+    # Ensure t is a numpy array
+    t = np.asarray(t)
 
-    if offset:
-        # baseline fluorescence is added to bring corrected y-values back to approximately the same level of uncorrected ones
-        # required if dFF is calculated using the corrected signal after linear fit
-        f0 = getBaseResp(signal, t, **kwargs)[0]
-        return signal-(t*slope+intercept)+f0, slope, intercept
+    # Prepare the design matrix for linear regression
+    X = np.vstack([t, np.ones(len(t))]).T
+
+    if signal.ndim == 1:
+        # If the signal is 1D, treat it as a single trace
+        slope, intercept = np.linalg.lstsq(X, signal, rcond=None)[0]
+        
+        if offset:
+            # baseline fluorescence is added to bring corrected y-values back to approximately the same level of uncorrected ones
+            # required if dFF is calculated using the corrected signal after linear fit subtraction
+            f0 = getBaseResp(signal, t, **kwargs)[0]
+            corrected_signal = signal - (t*slope + intercept) + f0
+        else:
+            # output (signal - linear fit) directly
+            # used to display how linear fit works
+            corrected_signal = signal - (t*slope + intercept)
+    
+    elif signal.ndim == 2:
+        # If the signal is 2D, process each trace (row) independently
+        # Initialize the output array
+        corrected_signal = np.zeros_like(signal)
+        slope = np.zeros(signal.shape[0])
+        intercept = np.zeros(signal.shape[0])
+        
+        for i in range(signal.shape[0]):
+            slope_trace, intercept_trace = np.linalg.lstsq(X, signal[i], rcond=None)[0]
+            slope[i] = slope_trace
+            intercept[i] = intercept_trace
+            
+            if offset:
+                f0 = getBaseResp(signal[i], t, **kwargs)[0]
+                corrected_signal[i] = signal[i] - (t*slope_trace + intercept_trace) + f0
+            else:
+                corrected_signal[i] = signal[i] - (t*slope_trace + intercept_trace)
+    
     else:
-        # output (signal - linear fit) directly
-        # used to display how linear fit works
-        return signal-(t*slope+intercept), slope, intercept
+        raise ValueError("Signal array must be 1D or 2D.")
+    
+    return corrected_signal, slope, intercept
 
 
 def getBaseResp(signal: np.ndarray, t: np.ndarray, 
