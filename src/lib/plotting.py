@@ -149,6 +149,7 @@ def plotDFFSeriesMask(imgSeries: np.ndarray,
                       Xshift_step: float = 3, 
                       Yshift_step: float = 2, 
                       dFResp: bool = False, 
+                      displayHeatmap: bool = False, 
                       displayContour: bool = True, 
                       Yaxis_range: tuple[float,float] = None, 
                       Xshift_Num: int = None, 
@@ -169,6 +170,7 @@ def plotDFFSeriesMask(imgSeries: np.ndarray,
         Xshift_step (float, optional): Step size along the X-axis. 
         Yshift_step (float, optional): Step size along the Y-axis.
         dFResp (bool, optional): Whether to calculate dF (`True`) or dFF (`False`).
+        displayHeatmap (bool, optional): Whether to show image as heatmap (`True`) or gray-scaled (`False`).
         displayContour (bool, optional): Whether to show mask as contour (`True`) or shaded region (`False`).
         Yaxis_range (tuple, optional): Set fixed Y-axis range as (y_min, y_max). If None, Y-axis is auto-scaled.
         Xshift_Num (int, optional): Number of steps along the X-axis for GIF movement.
@@ -234,8 +236,13 @@ def plotDFFSeriesMask(imgSeries: np.ndarray,
     # Transform signal array into 3D if it is initially 4D
     avgImg_map = imgSeries.mean(axis=0) if imgSeries.ndim == 4 else imgSeries
 
-    # Load heatmap of baseline fluorescence as static background
-    ax_img.imshow(imgProcess.calcSpatialBaseFluo(avgImg_map, **kwargs), cmap='jet')
+    # Load gray-scaled image or heatmap of baseline fluorescence as static background
+    if displayHeatmap:
+        ax_img.imshow(imgProcess.calcSpatialBaseFluo(avgImg_map, **kwargs), cmap='jet')
+        ax_img.set_title('Baseline Fluorescence Heatmap')
+    else:
+        ax_img.imshow(imgProcess.calcSpatialBaseFluo(avgImg_map, **kwargs), cmap='gray')
+        ax_img.set_title('Baseline Fluorescence')
 
     # Show initial mask overlay against baseline heatmap
     if displayContour:
@@ -244,7 +251,6 @@ def plotDFFSeriesMask(imgSeries: np.ndarray,
     else:
         # Display mask as a translucent shade
         mask_overlay = ax_img.imshow(mask_init['mask'], cmap='gray', alpha=0.5)
-    ax_img.set_title('Baseline Fluorescence Heatmap')
 
     # Set X- and Y-slider
     ax_x_slider = plt.axes([0.25, 0.15, 0.65, 0.03])
