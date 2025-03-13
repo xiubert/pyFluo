@@ -1,11 +1,14 @@
 import numpy as np
 import pandas as pd
 
+import colorsys
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 from matplotlib.widgets import Slider, Button
 from matplotlib.animation import FuncAnimation, PillowWriter
 import plotly.express as px
 import plotly.graph_objs as go
+from plotly.subplots import make_subplots
 
 from datetime import datetime
 import os
@@ -80,66 +83,135 @@ def experimentAvgPlot(dPath: str = None, qFiles: list = None,
     fig.show()
 
 
-def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict, **kwargs):
+def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict, dFResp: bool = False, 
+                            sepPlot: bool = True, errBar: bool = True, **kwargs):
+    """
+    Plot fluorescence response (dFF or dF) traces by treatment and dB.
 
-    fig = go.Figure()
-    colors = px.colors.qualitative.Plotly  # Use Plotly's default qualitative colors
-    label_to_color = {}  # Dictionary to store color mappings
+    Args:
+        df (pd.DataFrame): Metadata dataframe including columns `dB` and `treatment`.
+        qcam2img (dict): Dictionary mapping each qcam file path to its corresponding image data.
+        dFResp (bool, optional): If true, calculate dF response rather than dFF.
+        sepPlot (bool, optional): Whether to create separate subplots for each treatment.
+                                  - `True`: For each subplot, lower dBs are in cooler colors and higher dBs are in warmer colors.
+                                  - `False`: Treatments are distinguished by different color types, 
+                                             with lower dBs in lighter colors and higher dBs in darker colors.
+        errBar (bool, optional): If true, add error bars to curves.
+        **kwargs: Optional keyword arguments.
+            example: roi_mask (np.ndarray): 2D binary mask array specifying the region of interest.
+    """
 
-    for i,(label, df_group) in enumerate(df.groupby(['dB','treatment'])):
+    # Sort dataframe by treatment (consistent with initial order) and dB (in ascending order)
+    df_sorted = pd.concat([group.sort_values(by='dB') for _, group in df.groupby('treatment', sort=False)])
 
-        imgSeries = np.array(itemgetter(*df_group['qcam'])(qcam2img)) #shape [trace, Y, X, frame]
-        roi_mask = kwargs.get('roi_mask',np.ones(imgSeries.shape[1:3]))
-        signal = imgSeries[:,roi_mask==1,:].mean(axis=1)
+    # Initialize figure
+    if sepPlot:
+        # Map cooler colors to lower dBs and warmer colors to higher dBs
+        dB_values = df_sorted['dB'].unique()
+        colors = cm.coolwarm(np.linspace(0, 1, len(dB_values)))
+        colors = [f"rgb({int(r*255)}, {int(g*255)}, {int(b*255)})" for r, g, b, _ in colors]
+        dB2color = {dB: colors[i] for i, dB in enumerate(dB_values)}
 
-        _,dF,_ = signalProcess.dFFcalc(signal,**kwargs)
+        # Create subplots with one row per treatment
+        treat_values = df_sorted['treatment'].unique()
+        fig = make_subplots(rows=len(treat_values), cols=1, vertical_spacing=0.2,
+                            subplot_titles=[f"{treatment}" for treatment in treat_values])
+    else:
+        # Use qualitative colors for treatments
+        colors = px.colors.qualitative.Set1
+        max_dB = df_sorted['dB'].max()  # Maximum dB value for normalization
+        treat_values = df_sorted['treatment'].unique()
+        treat2color = {treat: colors[i] for i, treat in enumerate(treat_values)}
+        fig = go.Figure()
 
-        u,uPs,uMs = signalProcess.meanPlusMinusSem(dF)
-        t = signalProcess.getTimeVec(len(u))
-        label_str = str(list(map(str, label)))
+    # Calculate fluorescence response within each treatment/dB combination
+    for (treatment, dB), df_group in df_sorted.groupby(['treatment', 'dB'], sort=False):
+        imgSeries = np.array(itemgetter(*df_group['qcam'])(qcam2img))  # Shape: [trace, Y, X, frame]
+        roi_mask = kwargs.get('roi_mask', np.ones(imgSeries.shape[1:3]))
+        signal = imgSeries[:, roi_mask == 1, :].mean(axis=1)
 
-        color = colors[i % len(colors)]  # Cycle through colors
-        label_to_color[label_str] = color  # Store color for legend consistency
+        dFF, dF, _ = signalProcess.dFFcalc(signal, **kwargs)
+        response = dF if dFResp else dFF
+        mean, upper, lower = signalProcess.meanPlusMinusSem(response)
+        t = signalProcess.getTimeVec(len(mean))
 
-        fig.add_traces(
-            [
+        label_str = f"{treatment}, {dB} dB"
+
+        if sepPlot:
+            # Get cool-to-warm color based on dB level
+            color = dB2color[dB]
+            rgba_fill = color.replace("rgb", "rgba").replace(")", ", 0.1)")  # Add transparency of 10%
+            row = list(treat_values).index(treatment) + 1  # +1 because subplot rows are 1-indexed
+        else:
+            # Adjust lightness based on dB level
+            base_color = treat2color[treatment]
+            r, g, b = [int(val) for val in base_color.strip("rgb(").strip(")").split(",")]
+            lightness = 2.5 - 2 * (dB / max_dB)  # Normalize dB to [0.5, 2.5] for lightness
+            h, l, s = colorsys.rgb_to_hls(r/255, g/255, b/255)
+            r_new, g_new, b_new = colorsys.hls_to_rgb(h, l*lightness, s)
+            color = f"rgb({int(r_new*255)}, {int(g_new*255)}, {int(b_new*255)})"
+            rgba_fill = color.replace("rgb", "rgba").replace(")", ", 0.1)")  # Add transparency of 10%
+            row, col = None, None  # No subplots
+
+        # Add mean traces
+        fig.add_trace(
+            go.Scatter(
+                name=label_str,
+                x=t,
+                y=mean,
+                mode='lines',
+                line=dict(color=color),
+                legendgroup=label_str,
+                showlegend=True
+            ),
+            row=row, col=1 if sepPlot else None
+        )
+
+        if errBar:
+            # Add upper bound of error bar
+            fig.add_trace(
                 go.Scatter(
                     name=label_str,
                     x=t,
-                    y=u,
-                    mode='lines',
-                    line=dict(color=color),
-                    legendgroup=label_str,
-                ),
-                go.Scatter(
-                    name=str(list(map(str,label))),
-                    x=t,
-                    y=uPs,
+                    y=upper,
                     mode='lines',
                     line=dict(width=0),
                     legendgroup=label_str,
                     showlegend=False
                 ),
+                row=row, col=1 if sepPlot else None
+            )
+
+            # Add lower bound of error bar
+            fig.add_trace(
                 go.Scatter(
-                    name=str(list(map(str,label))),
+                    name=label_str,
                     x=t,
-                    y=uMs,
+                    y=lower,
                     line=dict(width=0),
                     mode='lines',
-                    fillcolor=f"rgba{tuple(int(color.strip('#')[i:i+2], 16) for i in (0, 2, 4)) + (0.2,)}",  # Convert hex to rgba with 20% opacity
+                    fillcolor=rgba_fill,
                     legendgroup=label_str,
                     fill='tonexty',
                     showlegend=False
-                )
-            ]
-        )
+                ),
+                row=row, col=1 if sepPlot else None
+            )
 
-    # Label x-axis as "Time (s)"
+    # Update layout
     fig.update_layout(
-                    title=f"{df.dir.unique()[0]}: dF at each sound level by treatment",
-                    xaxis_title="time (s)", 
-                    yaxis_title=("dF_roi" if "roi_mask" in kwargs else "dF")
-                    )
+        title=f"{df_sorted.dir.unique()[0]}: Fluorescence response at each sound level by treatment",
+        xaxis_title="time (s)",
+        yaxis_title=("dF" if dFResp else "dFF")
+    )
+
+    if sepPlot:
+        # Adjust layout for subplots
+        fig.update_layout(height=410 * len(treat_values))  # Adjust height based on the number of treatments
+        for i in range(1, len(treat_values) + 1):  # Add X- and Y-axis legends for each subplot
+            fig.update_xaxes(title_text="time (s)", row=i, col=1)
+            fig.update_yaxes(title_text=("dF" if dFResp else "dFF"), row=i, col=1)
+    
     fig.show()
 
 
