@@ -207,12 +207,15 @@ def qcamPath2table(exprmntPaths: list[str], format: str = 'MAK', subfolder: bool
     return df
 
 
-def loadQCamTable(df: pd.DataFrame) -> tuple[pd.DataFrame, dict, dict]:
+def loadQCamTable(df: pd.DataFrame, preExpose_excl: bool = False, loopGap: float = 30) -> tuple[pd.DataFrame, dict, dict]:
     """
     Processes a DataFrame of qcam metadata and returns the updated DataFrame along with image and header data.
 
     Args:
         df (pd.DataFrame): A DataFrame containing qcam metadata, including a column named 'qcam' with paths to `.qcamraw` files.
+        preExpose_excl (bool, optional): Whether to remove pre-exposing trials.
+        loopGap (float, optional): Time gap (in seconds) between adjacent trials within the loop.
+                                   If `preExpose_excl` is `True`, first few trials with gaps above this threshold will be removed.
 
     Returns:
         tuple:
@@ -248,6 +251,30 @@ def loadQCamTable(df: pd.DataFrame) -> tuple[pd.DataFrame, dict, dict]:
 
     df = df.merge(pd.DataFrame(timeStamps, columns=['qcam','nFrames','timestamp_init','dim_YX']), on='qcam')
     df['timestamp_init'] = pd.to_datetime(df['timestamp_init'], format='%m-%d-%Y_%H:%M:%S')
+    
+    # Rearrange traces in ascending time order
+    df = df.sort_values(by='timestamp_init', ignore_index=True)
+
+    if preExpose_excl:
+        # Remove first few pre-exposing trials before the loop for each animal and treatment
+        def remove_preExposeTrial(df_group):
+            # Calculate time gaps (in seconds) between adjacent trials
+            df_group['time_diff'] = df_group['timestamp_init'].diff().dt.total_seconds()
+            
+            # Identify the first and last trial where the time gap is below 30 seconds
+            first_loopTrial_index = df_group[df_group['time_diff'] <= loopGap].index[0] - 1    # -1 because this is the second trial of the loop
+            last_loopTrial_index = df_group[df_group['time_diff'] <= loopGap].index[-1] + 1    # +1 to include the last trial of the loop
+            
+            # Only remain loop trials in between
+            df_group_drop = df_group.loc[first_loopTrial_index:last_loopTrial_index].reset_index(drop=True)
+            
+            # Drop the newly-added 'time_diff' column
+            df_group_drop = df_group_drop.drop(columns=['time_diff'])
+            
+            return df_group_drop
+
+        # Group the data by 'dir' and 'treatment' and apply the function to each group
+        df = df.groupby(['dir', 'treatment'], sort=False)[df.columns.tolist()].apply(remove_preExposeTrial).reset_index(drop=True)
 
     return df,qcam2img,qcam2header
     
