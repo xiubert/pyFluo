@@ -243,7 +243,7 @@ def polygon2mask(points: list, image_shape: tuple = (130, 174), **kwargs):
 
 
 def getSquareMask(Xcoor: float, Ycoor: float, width: float, height: float, 
-                 angle: float = 90, X_parallel : bool = True, **kwargs):
+                 angle: float = 90, X_parallel: bool = True, rotate: float = None, **kwargs):
     """
     Manually generate a binary mask for a square- or parallelogram-shaped region of interest (ROI).
 
@@ -262,6 +262,8 @@ def getSquareMask(Xcoor: float, Ycoor: float, width: float, height: float,
                                     - `True`: The top and bottom sides are parallel to the X-axis.
                                     - `False`: The left and right sides are parallel to the Y-axis.
                                     Defaults to `True`.
+        rotate (float, optional): Angle (in degrees) to rotate the mask clockwise around its top-left vertex as the center.
+                                  Defaults to `None` (no rotation).
         **kwargs: Optional keyword arguments.
 
     Returns:
@@ -304,6 +306,19 @@ def getSquareMask(Xcoor: float, Ycoor: float, width: float, height: float,
                   (Xcoor + width, Ycoor + height + shift_y),
                   (Xcoor, Ycoor + height)]
     
+    # Rotate the mask clockwise if specified
+    if rotate:
+        cos_theta, sin_theta = math.cos(math.radians(rotate)), math.sin(math.radians(rotate))
+        
+        # Rotate each point relative to the top-left vertex (Xcoor, Ycoor)
+        points_rotated = []
+        for (x, y) in points:
+            x_rotated = (x - Xcoor) * cos_theta - (y - Ycoor) * sin_theta + Xcoor
+            y_rotated = (x - Xcoor) * sin_theta + (y - Ycoor) * cos_theta + Ycoor
+            points_rotated.append((x_rotated, y_rotated))
+        
+        points = points_rotated
+
     # Create binary mask from vertex coordinates
     mask = polygon2mask(points, **kwargs)
 

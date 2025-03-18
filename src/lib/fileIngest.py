@@ -231,6 +231,7 @@ def loadQCamTable(df: pd.DataFrame, preExpose_excl: bool = False, loopGap: float
         - Assumes the qcam header contains a 'ROI' field formatted as "startX,startY,endX,endY".
         - Timestamps in the qcam header are expected to follow the format '%m-%d-%Y_%H:%M:%S'.
         - Additional processing merges extracted metadata into the input DataFrame.
+        - Pre-exposing trials in a loop may not be detected by time gap thus not removed.
 
     Example:
         >>> df = pd.DataFrame({'qcam': ['path/to/file1.qcamraw', 'path/to/file2.qcamraw']})
@@ -241,16 +242,22 @@ def loadQCamTable(df: pd.DataFrame, preExpose_excl: bool = False, loopGap: float
         1  path/to/file2.qcamraw      600  2025-01-14 11:00:00  (256, 256)
 
     """
+
     qcam2img,qcam2header = {},{}
     timeStamps = []
+
+    # Process each qcam file and extract metadata
     for _,b in df.iterrows():
         qcam2img[b.qcam],qcam2header[b.qcam] = extract_qcamraw(b.qcam)
         _, _, x, y = map(int, qcam2header[b.qcam]['ROI'].replace(' ','').split(','))
 
         timeStamps.append((b.qcam, qcam2img[b.qcam].shape[2], qcam2header[b.qcam]['File_Init_Timestamp'], (y,x)))
 
-    df = df.merge(pd.DataFrame(timeStamps, columns=['qcam','nFrames','timestamp_init','dim_YX']), on='qcam')
-    df['timestamp_init'] = pd.to_datetime(df['timestamp_init'], format='%m-%d-%Y_%H:%M:%S')
+    # Update dataframe only when new columns are not included
+    if 'timestamp_init' not in df.columns:
+        # Merge extracted metadata into the DataFrame
+        df = df.merge(pd.DataFrame(timeStamps, columns=['qcam','nFrames','timestamp_init','dim_YX']), on='qcam')
+        df['timestamp_init'] = pd.to_datetime(df['timestamp_init'], format='%m-%d-%Y_%H:%M:%S')
     
     # Rearrange traces in ascending time order
     df = df.sort_values(by='timestamp_init', ignore_index=True)

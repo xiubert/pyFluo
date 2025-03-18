@@ -9,6 +9,7 @@ from matplotlib.animation import FuncAnimation, PillowWriter
 import plotly.express as px
 import plotly.graph_objs as go
 from plotly.subplots import make_subplots
+import seaborn as sns
 
 from datetime import datetime
 import os
@@ -213,6 +214,73 @@ def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict, dFResp: bool = Fal
             fig.update_yaxes(title_text=("dF" if dFResp else "dFF"), row=i, col=1)
     
     fig.show()
+
+
+def barplot_avgDF_reLevel(df, resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak', SEMbar: bool = True):
+    """
+    Plot barplots with error bars for fluorescence peak response averaged across animals re sound intensities.
+
+    Args:
+        df (pd.DataFrame): Metadata dataframe including columns: 'dir', 'treatment', 'dB', and column for the response variable.
+        resp_col (str, optional): Column name for the response variable. Defaults to 'dFF_ROI_linFilt_butterFilt_peak'.
+        SEMbar (bool, optional): If 'True', use standard error (SEM) for error bars. If 'False', use standard deviation (SD).
+
+    Notes:
+        - Peak amplitudes of individual traces are first averaged within each animals, then averaged across animals.
+        - Error bars represent across animals.
+    """
+
+    # Group by 'dir' and 'treatment' and extract unique 'dB' values
+    dB_list = list(df.groupby(['dir', 'treatment'], sort=False)['dB'].unique())
+
+    # Find the intersection of all lists
+    common_dB = set(dB_list[0])    # Start with the first list
+    for item in dB_list[1:]:    # Iterate over the remaining lists
+        common_dB.intersection_update(item)
+
+    # Convert the result to a sorted list
+    common_dB = sorted(common_dB)
+
+    # Filter rows where 'dB' is in the common_dB list
+    df_filtered = df[df['dB'].isin(common_dB)].reset_index(drop=True)
+
+    # Calculate the mean for each dir/treatment/dB combination
+    df_grouped = df_filtered.groupby(['dir', 'treatment', 'dB'], as_index=False, sort=False)[resp_col].mean().reset_index(drop=True)
+
+    # Calculate the mean and standard error (or SD) across dirs for each treatment/dB combination
+    df_avg = df_grouped.groupby(['treatment', 'dB'], as_index=False, sort=False).agg(
+        mean_dFF=(resp_col, 'mean'), 
+        std_dFF=(resp_col, 'std'), 
+        count_dFF=(resp_col, 'size')
+    )
+
+    if SEMbar:
+        # Calculate SEM rather than SD
+        df_avg['std_dFF'] = df_avg['std_dFF'] / np.sqrt(df_avg['count_dFF'])
+
+    # Fill NaN standard deviations with 0 (if there's only one dir for a treatment/dB combination)
+    df_avg['std_dFF'] = df_avg['std_dFF'].fillna(0)
+
+    # Sort the DataFrame by 'dB' in ascending order while keeping the original order of 'treatment'
+    df_avg = pd.concat([group.sort_values(by='dB') for _, group in df_avg.groupby('treatment', sort=False)]).reset_index(drop=True)
+
+    # Plot the barplots
+    g = sns.FacetGrid(df_avg, col='treatment', sharey=True, height=4)
+
+    # Define the function to plot bars with error bars
+    def plot_bars_with_error(data, **kwargs):
+        x = np.arange(len(data['dB']))
+        plt.bar(x, data['mean_dFF'], yerr=data['std_dFF'], capsize=3, **kwargs)
+        plt.xticks(x, data['dB'])
+
+    # Map the plotting function to the FacetGrid
+    g.map_dataframe(plot_bars_with_error)
+
+    # Add labels and titles
+    g.set_axis_labels("Sound Intensity (dB)", f"{resp_col} Response")
+    g.set_titles(col_template="{col_name}")
+
+    plt.show()
 
 
 def plotDFFSeriesMask(imgSeries: np.ndarray, 
