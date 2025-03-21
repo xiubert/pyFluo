@@ -1,7 +1,13 @@
 from scipy.signal import butter, filtfilt
 import numpy as np
+import pandas as pd
 from typing import Tuple
+import os
 import warnings
+import joblib
+
+import lib.signalProcess as signalProcess
+import lib.metadataProcess as metadataProcess
 
 
 def getTimeVec(nFrames: int, 
@@ -497,3 +503,136 @@ def meanPlusMinusSem(traceXtimeArray: np.ndarray) -> Tuple[np.ndarray, np.ndarra
     sem = std / np.sqrt(traceXtimeArray.shape[0])
 
     return u, u + sem, u - sem
+
+
+def updateTable_signal(df: pd.DataFrame, qcam2img: dict, 
+                       t_base: tuple = (2.0, 3.0), t_resp: tuple = (3.3, 4.0), 
+                       cutoff_freq: float = 2, **kwargs):
+    """
+    Update metadata dataframe with raw and processed signals.
+
+    Args:
+        df (pd.DataFrame): Metadata dataframe including columns: 'qcam' and 'dir'.
+        qcam2img (dict): Dictionary mapping each qcam file path to its corresponding image data.
+        t_base (tuple, optional): Baseline time window. Defaults to (2.0, 3.0).
+        t_resp (tuple, optional): Response time window. Defaults to (3.3, 4.0).
+        cutoff_freq (float, optional): Low-pass filter cutoff frequency. Defaults to 2.
+        **kwargs: Optional arguments that will override default.
+            example: stimStart (float, optional): Stimulus start time (in seconds) by default. Defaults to 3.
+
+    Returns:
+        df_updated (pd.DataFrame): Updated metadata dataframe including new columns:
+                                   'ROImask', 'time', 'baseWindow', 'respWindow', 
+                                   'F_ROI_raw', 'F_ROI_linFilt_butterFilt', 
+                                   'f0_ROI_raw', 'f0_ROI_linFilt_butterFilt', 
+                                   'dF_ROI_raw', 'dF_ROI_raw_peak', 
+                                   'dF_ROI_linFilt_butterFilt', 'dF_ROI_linFilt_butterFilt_peak', 
+                                   'dFF_ROI_raw', 'dFF_ROI_raw_peak', 
+                                   'dFF_ROI_linFilt_butterFilt', 'dFF_ROI_linFilt_butterFilt_peak', 
+                                   'valid'.
+    
+    Notes:
+        - The function grabs 'response_mask.joblib' file in the experiment folder ('dir') as ROI masks.
+        - The function grabs 'STIMULUS_START_*_sec*' file in the experiment folder ('dir') 
+          to adjust baseline and response time windows based on when stimuli start.
+    """
+    
+    # Check whether required columns exist
+    required_col = ['qcam', 'dir']
+    if not all(col in df.columns for col in required_col):
+        raise ValueError(f"DataFrame must contain the following columns: {required_col}")
+    
+    df_updated = df.copy()
+    
+    # Add binary mask of ROI by searching for 'joblib' file in the same directory
+    df_updated['ROImask'] = df_updated['dir'].apply(lambda x: joblib.load(os.path.join(x, 'response_mask.joblib')))
+
+    # Add time vector
+    df_updated['time'] = df_updated['qcam'].apply(lambda x: getTimeVec(qcam2img[x].shape[-1], **kwargs))
+
+    # Check whether all traces are of the same frame counts
+    if df_updated['time'].apply(lambda x: x.shape[0]).nunique() > 1:
+        warnings.warn("Traces have more than one frame count. Ensure time windows are adjusted.")
+
+    # Add baseline and response time windows
+    # Adjust windows automatically according to 'STIMULUS_START_*_sec*' files
+    df_updated['baseWindow'] = metadataProcess.getBaseRespWindow(df_updated, t_base=t_base, t_resp=t_resp, **kwargs)['baseWindow']
+    df_updated['respWindow'] = metadataProcess.getBaseRespWindow(df_updated, t_base=t_base, t_resp=t_resp, **kwargs)['respWindow']
+
+    # Add fluorescence trace (F) within ROI
+    # Raw data
+    df_updated['F_ROI_raw'] = df_updated.apply(lambda x: qcam2img[x['qcam']][x['ROImask']==1, :].mean(axis=0), axis=1)
+    # Processed data (subtracted linear fit and added low-pass filter)
+    df_updated['F_ROI_linFilt_butterFilt'] = df_updated.apply(
+        lambda x: butterFilter(
+            subtractLinFit(x['time'], x['F_ROI_raw'], t_base=x['baseWindow'], **kwargs)[0], cutoff_freq=cutoff_freq, **kwargs
+        ), 
+        axis=1
+    )
+
+    # Add baseline fluorescence (f0) within ROI
+    # Raw data
+    df_updated['f0_ROI_raw'] = df_updated.apply(
+        lambda x: getBaseResp(x['F_ROI_raw'], x['time'], t_base=x['baseWindow'], **kwargs)[0], axis=1
+    )
+    # Processed data (subtracted linear fit and added low-pass filter)
+    df_updated['f0_ROI_linFilt_butterFilt'] = df_updated.apply(
+        lambda x: getBaseResp(x['F_ROI_linFilt_butterFilt'], x['time'], t_base=x['baseWindow'], **kwargs)[0], axis=1
+    )
+
+    # Add dF response within ROI
+    # Raw data
+    df_updated['dF_ROI_raw'] = df_updated.apply(lambda x: x['F_ROI_raw'] - x['f0_ROI_raw'], axis=1)
+    df_updated['dF_ROI_raw_peak'] = df_updated.apply(
+        lambda x: pkDFFimg(
+            qcam2img[x['qcam']], subLinFit=False, ROImask=x['ROImask'], butterFilt=False, 
+            dFResp=True, negExcl=False, t_base=x['baseWindow'], t_resp=x['respWindow'], **kwargs
+        ), 
+        axis=1
+    )
+    # Processed data (subtracted linear fit and added low-pass filter)
+    df_updated['dF_ROI_linFilt_butterFilt'] = df_updated.apply(
+        lambda x: x['F_ROI_linFilt_butterFilt'] - x['f0_ROI_linFilt_butterFilt'], axis=1
+    )
+    df_updated['dF_ROI_linFilt_butterFilt_peak'] = df_updated.apply(
+        lambda x: pkDFFimg(
+            qcam2img[x['qcam']], ROImask=x['ROImask'], cutoff_freq=cutoff_freq, 
+            dFResp=True, negExcl=False, t_base=x['baseWindow'], t_resp=x['respWindow'], **kwargs
+        ), 
+        axis=1
+    )
+
+    # Add dFF response within ROI
+    # Raw data
+    df_updated['dFF_ROI_raw'] = df_updated.apply(lambda x: x['dF_ROI_raw'] / x['f0_ROI_raw'], axis=1)
+    df_updated['dFF_ROI_raw_peak'] = df_updated.apply(
+        lambda x: pkDFFimg(
+            qcam2img[x['qcam']], subLinFit=False, ROImask=x['ROImask'], butterFilt=False, 
+            negExcl=False, t_base=x['baseWindow'], t_resp=x['respWindow'], **kwargs
+        ), 
+        axis=1
+    )
+    # Processed data (subtracted linear fit and added low-pass filter)
+    df_updated['dFF_ROI_linFilt_butterFilt'] = df_updated.apply(
+        lambda x: x['dF_ROI_linFilt_butterFilt'] / x['f0_ROI_linFilt_butterFilt'], axis=1
+    )
+    df_updated['dFF_ROI_linFilt_butterFilt_peak'] = df_updated.apply(
+        lambda x: pkDFFimg(
+            qcam2img[x['qcam']], ROImask=x['ROImask'], cutoff_freq=cutoff_freq, 
+            negExcl=False, t_base=x['baseWindow'], t_resp=x['respWindow'], **kwargs
+        ), 
+        axis=1
+    )
+
+    # Identify whether each trace is an outlier with negative response (`False`)
+    # Test sign of peak dFF response only, as the result is the same for peak dF response
+    # Time window for exclusive thresholds is suggested overlapping with response time window
+    df_updated['valid'] = df_updated.apply(
+        lambda x: is_valid_resp(
+            qcam2img[x['qcam']], ROImask=x['ROImask'], t_base=x['baseWindow'], 
+            t_resp=x['respWindow'], t_resp_excl=x['respWindow'], **kwargs
+        ), 
+        axis=1
+    )
+
+    return df_updated

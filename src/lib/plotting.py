@@ -84,6 +84,88 @@ def experimentAvgPlot(dPath: str = None, qFiles: list = None,
     fig.show()
 
 
+def plot_individualTrace(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF_ROI_raw', 
+                         sepPlot: bool = False, stimStart: float = 3.0, alpha_ind: float = 0.3, **kwargs):
+    """
+    Plot individual and averaged traces for a given sound intensity across different treatments.
+
+    Args:
+        df (pd.DataFrame): Metadata dataframe including columns: 
+                           'dB', 'treatment', 'time' (or 'nFrames'), and column for response traces.
+        dB_plot (int, optional): Sound intensity (in dB) to filter the data. Defaults to 80.
+        resp_col (str, optional): Column name for response traces. Defaults to 'dFF_ROI_raw'.
+        sepPlot (bool, optional): If True, plot treatments in separate subplots; otherwise, plot in one plot. 
+                                  Defaults to 'False'.
+        stimStart (float, optional): Stimulus start time (in seconds). Defaults to 3.0.
+        alpha_ind (float, optional): Transparency for individual traces. Defaults to 0.3.
+        **kwargs: Optional arguments that will override default.
+    """
+    
+    # Check whether required columns exist
+    required_cols = ['dB', 'treatment', resp_col]
+    if not all(col in df.columns for col in required_cols):
+        raise ValueError(f"DataFrame must contain the following columns: {required_cols}")
+    
+    # Check whether specified sound level exists
+    if dB_plot not in df['dB'].unique():
+        raise ValueError(f"dB_plot={dB_plot} not found in the 'dB' column.")
+    
+    # Filter the DataFrame for the specified sound intensity
+    filtered_df = df[df['dB'] == dB_plot]
+    
+    # Get time vector
+    if 'time' in filtered_df.columns:
+        time = filtered_df['time'].iloc[0]
+    elif 'nFrames' in filtered_df.columns:
+        time = signalProcess.getTimeVec(filtered_df['nFrames'].iloc[0], **kwargs)
+    else:
+        raise ValueError("Cannot access time vector. Neither 'time' nor 'nFrames' column found in dataframe.")
+
+    # Extract traces for each treatment
+    traces = {}
+    treatments = filtered_df['treatment'].unique()
+    for treatment in treatments:
+        treatment_df = filtered_df[filtered_df['treatment'] == treatment]
+        traces[treatment] = {
+            'individual': np.array(list(treatment_df[resp_col])).T,
+            'averaged': np.mean(np.array(list(treatment_df[resp_col])).T, axis=1)
+        }
+    
+    # Create the figure and axes
+    if sepPlot:
+        fig, ax = plt.subplots(len(treatments), 1, figsize=(10, 4 * len(treatments)))
+        if len(treatments) == 1:
+            ax = [ax]  # Ensure ax is always a list for consistency
+    else:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax = [ax]  # Ensure ax is a list for consistency
+    
+    # Plot the traces
+    for i, treatment in enumerate(treatments):
+        color = plt.cm.Set1(i)  # Use a colormap for distinct colors
+        current_ax = ax[i] if sepPlot else ax[0]
+        
+        # Plot individual traces
+        for j in range(traces[treatment]['individual'].shape[1]):
+            current_ax.plot(time, traces[treatment]['individual'][:, j], color='gray' if sepPlot else color, 
+                            alpha=alpha_ind, label=f'{treatment} Individual' if j == 0 else "")
+        
+        # Plot averaged trace
+        current_ax.plot(time, traces[treatment]['averaged'], color=color, linewidth=2, 
+                        label=f'{treatment} Averaged')
+        
+        # Add labels, title, and stimulus line
+        current_ax.set_xlabel('time (s)', size=12)
+        current_ax.set_ylabel(resp_col, size=12)
+        current_ax.set_title(f"{treatment}", size=12) if sepPlot else None
+        current_ax.axvline(x=stimStart, color='k', linestyle='--')
+        current_ax.legend()
+    
+    fig.suptitle(f"Individual and Averaged Traces: {dB_plot} dB", size=14)
+    plt.tight_layout()
+    plt.show()
+
+
 def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict, dFResp: bool = False, 
                             sepPlot: bool = True, errBar: bool = True, **kwargs):
     """
@@ -217,7 +299,7 @@ def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict, dFResp: bool = Fal
 
 
 def barplot_avgDF_reLevel(df, resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak', 
-                          avgAnimal: bool = True, SEMbar: bool = True, 
+                          avgAnimal: bool = True, normalize: str = None, SEMbar: bool = True, 
                           lineplot: bool = False, **kwargs) -> pd.DataFrame:
     """
     Plot barplots or lineplots with error bars for fluorescence peak response averaged across animals re sound intensities.
@@ -226,30 +308,40 @@ def barplot_avgDF_reLevel(df, resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak',
         df (pd.DataFrame): Metadata dataframe including columns: 'dir', 'treatment', 'dB', and column for the response variable.
         resp_col (str, optional): Column name for the response variable. Defaults to 'dFF_ROI_linFilt_butterFilt_peak'.
         avgAnimal (bool, optional): Whether to average peak response across animals or individual trials.
-                                    - 'True': Average in separate steps.
-                                              First average peak response within each animal, then average the mean across animals.
+                                    - 'True': Average in two steps:
+                                              First average peak responses within each animal, then average the mean across animals.
                                               Error bars represent SEM or SD across animals.
-                                    - 'False': Average in one step.
-                                               Average peak response of all individual trials from all animals.
+                                    - 'False': Average in one step:
+                                               Average peak responses of all individual trials from all animals.
                                                Error bars represent SEM or SD across trials.
                                     Defaults to 'True'.
+        normalize (str, optional): Whether to normalize peak response to the max response (in percentage). 
+                                   - 'byGroup': For each animal, calculate the mean for each sound level, then normalize these means to the max mean.
+                                                Only applicable when 'avgAnimal' is 'True'.
+                                   - 'byTrial': For each animal, normalize all individual trials to the trial with the max response.
+                                   - None: No normalization is applied.
         SEMbar (bool, optional): If 'True', use standard error (SEM) for error bars. If 'False', use standard deviation (SD).
         lineplot (bool, optional): If 'True', plot a lineplot instead of barplots. Defaults to 'False'.
         **kwargs: Optional arguments that will override default.
-            example: capsize (float, optional): Size of error bar caps. Defaults to no caps.
+            example: capsize (float, optional): Error bar cap size. Defaults to no caps.
 
     Returns:
         df_avg (pd.DataFrame): Statistics dataframe across animals ('dir's) including columns: 
                                'treatment', 'dB', 'count', 'mean', 'std', and 'sem'.
     
     Notes:
-        - If 'avgAnimal' is 'False', animals may have different weight due to different trial counts for each animal.
+        - If 'avgAnimal' is 'False', animals may have different weights due to varying trial counts for each animal.
+        - normalize='byGroup' is only applicable when 'avgAnimal' is 'True'.
     """
 
-    # Check if required columns exist
+    # Check whether required columns exist
     required_col = ['dir', 'treatment', 'dB', resp_col]
     if not all(col in df.columns for col in required_col):
         raise ValueError(f"DataFrame must contain the following columns: {required_col}")
+    
+    # Check whether normalization is applicable
+    if normalize == 'byGroup' and not avgAnimal:
+        warnings.warn("Normalization by group cannot be applied when 'avgAnimal' is False.")
     
     # Group by 'dir' and 'treatment' and extract unique 'dB' values
     dB_lists = list(df.groupby(['dir', 'treatment'], sort=False)['dB'].unique())
@@ -265,9 +357,18 @@ def barplot_avgDF_reLevel(df, resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak',
     # Filter rows where 'dB' is in the common_dB list
     df_filtered = df[df['dB'].isin(common_dB)].reset_index(drop=True)
 
+    if normalize == 'byTrial':
+        # Normalize each trial's response to the max response within the same animal
+        df_filtered[resp_col] = df_filtered.groupby(['dir'], sort=False)[resp_col].transform(lambda x: (x / x.max()) * 100)
+        print("Normalized on the trial basis.")
+
     if avgAnimal:
         # Calculate the mean within each dir for each treatment/dB combination
         df_grouped = df_filtered.groupby(['dir', 'treatment', 'dB'], as_index=False, sort=False)[resp_col].mean().reset_index(drop=True)
+        if normalize == 'byGroup':
+            # Normalize mean response of each treatment/dB combination group to the max mean response within the same animal
+            df_grouped[resp_col] = df_grouped.groupby(['dir'], sort=False)[resp_col].transform(lambda x: (x / x.max()) * 100)
+            print('Normalized on the treatment/dB combination group basis.')
     else:
         # Maintain the unaveraged original data of each individual trial
         df_grouped = df_filtered.loc[:, ['treatment', 'dB', resp_col]]
@@ -297,7 +398,7 @@ def barplot_avgDF_reLevel(df, resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak',
                          yerr=group[f'sem_{resp_col}'] if SEMbar else group[f'std_{resp_col}'], 
                          label=treatment, marker='o', **kwargs)
         plt.xlabel("Sound Intensity (dB)")
-        plt.ylabel(f"{resp_col} Response")
+        plt.ylabel(f"{resp_col} Response" if normalize is None else f"{resp_col} Response (%)")
         plt.legend(title="Treatment")
         plt.title("Response by Sound Intensity and Treatment")
         plt.show()
@@ -317,7 +418,7 @@ def barplot_avgDF_reLevel(df, resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak',
         g.map_dataframe(plot_bars_with_error, **kwargs)
 
         # Add labels and titles
-        g.set_axis_labels("Sound Intensity (dB)", f"{resp_col} Response")
+        g.set_axis_labels("Sound Intensity (dB)", f"{resp_col} Response" if normalize is None else f"{resp_col} Response (%)")
         g.set_titles(col_template="{col_name}")
         plt.show()
 
