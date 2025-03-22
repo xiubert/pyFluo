@@ -505,15 +505,15 @@ def meanPlusMinusSem(traceXtimeArray: np.ndarray) -> Tuple[np.ndarray, np.ndarra
     return u, u + sem, u - sem
 
 
-def updateTable_signal(df: pd.DataFrame, qcam2img: dict, 
-                       t_base: tuple = (2.0, 3.0), t_resp: tuple = (3.3, 4.0), 
-                       cutoff_freq: float = 2, **kwargs):
+def updateTable_signal(df: pd.DataFrame, qcam2img: dict, mask_name: str = 'response_mask.joblib', 
+                       t_base: tuple = (2.0, 3.0), t_resp: tuple = (3.3, 4.0), cutoff_freq: float = 2, **kwargs):
     """
-    Update metadata dataframe with raw and processed signals.
+    Update metadata dataframe with raw and processed signals within ROI.
 
     Args:
         df (pd.DataFrame): Metadata dataframe including columns: 'qcam' and 'dir'.
         qcam2img (dict): Dictionary mapping each qcam file path to its corresponding image data.
+        mask_name (str, optional): Filename of the binary mask to search for. Defaults to 'response_mask.joblib'.
         t_base (tuple, optional): Baseline time window. Defaults to (2.0, 3.0).
         t_resp (tuple, optional): Response time window. Defaults to (3.3, 4.0).
         cutoff_freq (float, optional): Low-pass filter cutoff frequency. Defaults to 2.
@@ -545,7 +545,13 @@ def updateTable_signal(df: pd.DataFrame, qcam2img: dict,
     df_updated = df.copy()
     
     # Add binary mask of ROI by searching for 'joblib' file in the same directory
-    df_updated['ROImask'] = df_updated['dir'].apply(lambda x: joblib.load(os.path.join(x, 'response_mask.joblib')))
+    masks = []
+    for dir in df_updated['dir']:
+        mask_path = os.path.join(dir, mask_name)
+        if not os.path.exists(mask_path):
+            raise FileNotFoundError(f"ROI Mask file '{mask_name}' not found in directory: {dir}")
+        masks.append(joblib.load(mask_path))
+    df_updated['ROImask'] = masks
 
     # Add time vector
     df_updated['time'] = df_updated['qcam'].apply(lambda x: getTimeVec(qcam2img[x].shape[-1], **kwargs))

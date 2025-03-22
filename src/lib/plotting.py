@@ -92,7 +92,7 @@ def plot_individualTrace(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'd
     Args:
         df (pd.DataFrame): Metadata dataframe including columns: 
                            'dB', 'treatment', 'time' (or 'nFrames'), and column for response traces.
-        dB_plot (int, optional): Sound intensity (in dB) to filter the data. Defaults to 80.
+        dB_plot (int, optional): Sound intensity (in dB) for traces to be plotted. Defaults to 80.
         resp_col (str, optional): Column name for response traces. Defaults to 'dFF_ROI_raw'.
         sepPlot (bool, optional): If True, plot treatments in separate subplots; otherwise, plot in one plot. 
                                   Defaults to 'False'.
@@ -111,7 +111,7 @@ def plot_individualTrace(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'd
         raise ValueError(f"dB_plot={dB_plot} not found in the 'dB' column.")
     
     # Filter the DataFrame for the specified sound intensity
-    filtered_df = df[df['dB'] == dB_plot]
+    filtered_df = df[df['dB'] == dB_plot].reset_index(drop=True)
     
     # Get time vector
     if 'time' in filtered_df.columns:
@@ -142,7 +142,8 @@ def plot_individualTrace(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'd
     
     # Plot the traces
     for i, treatment in enumerate(treatments):
-        color = plt.cm.Set1(i)  # Use a colormap for distinct colors
+        # Use discrete colormap (from matplotlib) for different treatments
+        color = plt.cm.tab10(i)
         current_ax = ax[i] if sepPlot else ax[0]
         
         # Plot individual traces
@@ -200,11 +201,11 @@ def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict, dFResp: bool = Fal
         fig = make_subplots(rows=len(treat_values), cols=1, vertical_spacing=0.2,
                             subplot_titles=[f"{treatment}" for treatment in treat_values])
     else:
-        # Use qualitative colors for treatments
-        colors = px.colors.qualitative.Set1
+        # Use discrete colormap (from matplotlib) for different treatments
+        colors = plt.cm.tab10.colors
         max_dB = df_sorted['dB'].max()  # Maximum dB value for normalization
         treat_values = df_sorted['treatment'].unique()
-        treat2color = {treat: colors[i] for i, treat in enumerate(treat_values)}
+        treat2color = {treat: f"rgb({int(r*255)}, {int(g*255)}, {int(b*255)})" for treat, (r, g, b) in zip(treat_values, colors)}
         fig = go.Figure()
 
     # Calculate fluorescence response within each treatment/dB combination
@@ -216,7 +217,7 @@ def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict, dFResp: bool = Fal
         dFF, dF, _ = signalProcess.dFFcalc(signal, **kwargs)
         response = dF if dFResp else dFF
         mean, upper, lower = signalProcess.meanPlusMinusSem(response)
-        t = signalProcess.getTimeVec(len(mean))
+        t = signalProcess.getTimeVec(len(mean), **kwargs)
 
         label_str = f"{treatment}, {dB} dB"
 
@@ -298,11 +299,194 @@ def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict, dFResp: bool = Fal
     fig.show()
 
 
-def barplot_avgDF_reLevel(df, resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak', 
-                          avgAnimal: bool = True, normalize: str = None, SEMbar: bool = True, 
-                          lineplot: bool = False, **kwargs) -> pd.DataFrame:
+def plotTrace_reAnimal(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF_ROI_raw', 
+                       sepPlot: bool = True, **kwargs):
+    """
+    Plot averaged traces with error bars for a given sound intensity re treatments and animals.
+
+    Args:
+        df (pd.DataFrame): Metadata dataframe including columns: 
+                           'dir', 'dB', 'treatment', 'time' (or 'nFrames'), and column for response traces.
+        dB_plot (int, optional): Sound intensity (in dB) for traces to be plotted. Defaults to 80.
+        resp_col (str, optional): Column name for response traces. Defaults to 'dFF_ROI_raw'.
+        sepPlot (bool, optional): If True, plot treatments in separate subplots; otherwise, plot in one plot. 
+                                  Defaults to 'True'.
+        **kwargs: Optional arguments that will override default.
+    """
+
+    # Check whether required columns exist
+    required_cols = ['dir', 'dB', 'treatment', resp_col]
+    if not all(col in df.columns for col in required_cols):
+        raise ValueError(f"Dataframe must contain the following columns: {required_cols}")
+    
+    # Check whether specified sound level exists
+    if dB_plot not in df['dB'].unique():
+        raise ValueError(f"{dB_plot} not found in the 'dB' column.")
+    
+    # Filter the DataFrame for the specified sound intensity
+    filtered_df = df[df['dB'] == dB_plot].reset_index(drop=True)
+    
+    # Create a list including time vectors of all trials
+    if 'time' in filtered_df.columns:
+        time_vectors = filtered_df['time'].tolist()
+    elif 'nFrames' in filtered_df.columns:
+        time_vectors = [signalProcess.getTimeVec(nFrames, **kwargs) for nFrames in filtered_df['nFrames']]
+    else:
+        raise ValueError("Cannot access time vector. Neither 'time' nor 'nFrames' column found in dataframe.")
+    
+    # Ensure sound stimuli start at the same time for all traces
+    trace_lengths = filtered_df['time'].apply(len) if 'time' in filtered_df.columns else filtered_df['nFrames']
+    if 'baseWindow' not in filtered_df.columns and 'respWindow' not in filtered_df.columns:
+        if trace_lengths.nunique() > 1:
+            # Raise error when traces have more than one length and cannot be aligned according to time window
+            raise ValueError("Traces have different lengths. Unable to align them based on baseline or response time windows.")
+    else:
+        # Align the baseline or response time window across traces from different animals
+        windows = filtered_df['baseWindow'].tolist() if 'baseWindow' in filtered_df.columns else filtered_df['respWindow'].tolist()
+        # Set the latest time window as reference (to avoid negative values in time vectors)
+        ref_window = max(windows, key=lambda x: x[0])    # With the latest start time
+        for i, (window, time_vector) in enumerate(zip(windows, time_vectors)):
+            if window != ref_window:
+                shift = window[0] - ref_window[0]
+                # Shift the time vector
+                time_vectors[i] = time_vector - shift
+    
+    # Initialize data for plotting
+    plot_data = {}
+
+    # Determine the full time range of time vectors after alignment
+    min_time = 0    # Bacause time vectors start at 0, and are all non-negative after alignment
+    max_time = max(max(time_vector) for time_vector in time_vectors)
+
+    # Group by animal and treatment
+    for (animal, treatment), group in filtered_df.groupby(['dir', 'treatment'], sort=False):
+        traces = np.array(group[resp_col].tolist())
+        mean, upper, lower = signalProcess.meanPlusMinusSem(traces)
+        time_vector = time_vectors[group.index[0]]  # Use the time vector of the first trace in the group
+
+        # Pad the time vector and traces to match the full time range
+        if min(time_vector) > min_time:
+            # Pad at the beginning
+            padding_length = int((min(time_vector) - min_time) / np.diff(time_vector)[0])
+            mean = np.pad(mean, (padding_length, 0), constant_values=np.nan)
+            upper = np.pad(upper, (padding_length, 0), constant_values=np.nan)
+            lower = np.pad(lower, (padding_length, 0), constant_values=np.nan)
+            time_vector = np.pad(time_vector, (padding_length, 0), constant_values=np.nan)
+
+        if max(time_vector) < max_time:
+            # Pad at the end
+            padding_length = int((max_time - max(time_vector)) / np.diff(time_vector)[0])
+            mean = np.pad(mean, (0, padding_length), constant_values=np.nan)
+            upper = np.pad(upper, (0, padding_length), constant_values=np.nan)
+            lower = np.pad(lower, (0, padding_length), constant_values=np.nan)
+            time_vector = np.pad(time_vector, (0, padding_length), constant_values=np.nan)
+
+        # Store the padded data
+        plot_data[(animal, treatment)] = (mean, upper, lower, time_vector)
+    
+    # Create the plot
+    treatments = filtered_df['treatment'].unique()
+    if sepPlot:
+        # Create subplots for each treatment
+        fig = make_subplots(rows=len(treatments), cols=1, subplot_titles=[f"{treat}" for treat in treatments],
+                            vertical_spacing=0.15)
+    else:
+        # Create a single plot
+        fig = go.Figure()
+    
+    # Assign colors
+    animals = filtered_df['dir'].unique()
+    animal_colors = {animal: f"hsl({(i * 360 / len(animals)) % 360}, 50%, 50%)" for i, animal in enumerate(animals)}
+    
+    # Track which animals have already been added to the legend
+    legend_added = set()
+
+    # Plotting
+    for i, ((animal, treatment), (mean, upper, lower, time_vector)) in enumerate(plot_data.items()):
+        if sepPlot:
+            # In separate subplots, use the same color for the same animal across treatments
+            color = animal_colors[animal]
+            label = f"{animal}" if animal not in legend_added else None  # Add label only once
+            if animal not in legend_added:
+                legend_added.add(animal)
+        else:
+            # In one plot, use the same base color for the same animal, but vary lightness for treatments
+            base_color = animal_colors[animal]
+            # Extract hue from the base color
+            hue = float(base_color.split('(')[1].split(',')[0])  # Extract hue as a float
+            lightness = 0.3 + 0.4 * list(treatments).index(treatment) / (len(treatments) - 1)  # Vary lightness
+            color = f"hsl({int(hue)}, 50%, {int(lightness * 100)}%)"  # Convert hue to integer
+            label = f"{animal} {treatment}"  # Show full label for each trace
+        
+        if sepPlot:
+            row = list(treatments).index(treatment) + 1
+            col = 1
+        else:
+            row, col = None, None
+        
+        # Add mean trace
+        fig.add_trace(
+            go.Scatter(
+                x=time_vector,
+                y=mean,
+                mode='lines',
+                name=label,
+                line=dict(color=color),
+                legendgroup=animal if sepPlot else f"{animal}_{treatment}",  # Link traces for the same animal in sepPlot
+                showlegend=label is not None  # Show legend only for the first occurrence of each animal
+            ),
+            row=row, col=col
+        )
+        
+        # Add error bands (upper and lower bounds)
+        fig.add_trace(
+            go.Scatter(
+                x=time_vector,
+                y=upper,
+                mode='lines',
+                line=dict(width=0),
+                showlegend=False,
+                legendgroup=animal if sepPlot else f"{animal}_{treatment}"
+            ),
+            row=row, col=col
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=time_vector,
+                y=lower,
+                mode='lines',
+                line=dict(width=0),
+                fillcolor=color.replace("hsl", "hsla").replace(")", ", 0.2)"),  # Set transparency = 0.2
+                fill='tonexty',
+                showlegend=False,
+                legendgroup=animal if sepPlot else f"{animal}_{treatment}"
+            ),
+            row=row, col=col
+        )
+    
+    # Update layout
+    fig.update_layout(
+        title=f"Averaged traces across animals at dB={dB_plot}",
+        xaxis_title="Time (s)",
+        yaxis_title=resp_col,
+        height=450 * len(treatments) if sepPlot else 500
+    )
+    
+    if sepPlot:
+        # Update subplot titles and axes
+        for i, treatment in enumerate(treatments):
+            fig.update_xaxes(title_text="Time (s)", row=i+1, col=1)
+            fig.update_yaxes(title_text=resp_col, row=i+1, col=1)
+    
+    fig.show()
+
+
+def plot_avgDFF_acrossAnimal(df: pd.DataFrame, resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak', 
+                             avgAnimal: bool = True, normalize: str = None, SEMbar: bool = True, 
+                             lineplot: bool = True, **kwargs) -> pd.DataFrame:
     """
     Plot barplots or lineplots with error bars for fluorescence peak response averaged across animals re sound intensities.
+    Create a new dataframe including the mean, SD, and SEM of peak response for each sound level.
 
     Args:
         df (pd.DataFrame): Metadata dataframe including columns: 'dir', 'treatment', 'dB', and column for the response variable.
@@ -321,7 +505,7 @@ def barplot_avgDF_reLevel(df, resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak',
                                    - 'byTrial': For each animal, normalize all individual trials to the trial with the max response.
                                    - None: No normalization is applied.
         SEMbar (bool, optional): If 'True', use standard error (SEM) for error bars. If 'False', use standard deviation (SD).
-        lineplot (bool, optional): If 'True', plot a lineplot instead of barplots. Defaults to 'False'.
+        lineplot (bool, optional): If 'False', plot barplots instead of the lineplot. Defaults to 'True'.
         **kwargs: Optional arguments that will override default.
             example: capsize (float, optional): Error bar cap size. Defaults to no caps.
 
