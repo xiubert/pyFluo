@@ -7,7 +7,6 @@ import warnings
 import joblib
 from glob import glob
 
-import lib.signalProcess as signalProcess
 import lib.metadataProcess as metadataProcess
 
 
