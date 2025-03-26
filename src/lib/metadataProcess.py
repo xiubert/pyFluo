@@ -1,5 +1,6 @@
 from scipy.io import loadmat
 import re
+import pandas as pd
 import numpy as np
 import os
 from glob import glob
@@ -82,7 +83,7 @@ def getPulseDB(pulse: str, format: str = 'MAK'):
         return None
     
 
-def getInjectionCond(df) -> list:
+def getInjectionCond(df: pd.DataFrame) -> list:
     """
     Returns treatment label for files (rows) in the DataFrame under a specific experimental condition.
     No treatment is considered 'CTRL'. Injection treatments are lebeled as: 'pre[DRUG]', or 'post[DRUG]', eg. preZX1, postZX1.
@@ -127,3 +128,54 @@ def getInjectionCond(df) -> list:
             treatment_labels.extend(['CTRL'] * len(group))
 
     return treatment_labels
+
+
+def getBaseRespWindow(df: pd.DataFrame, t_base: tuple = (2.0, 3.0), t_resp: tuple = (3.3, 4.0), stimStart: float = 3.0) -> dict:
+    """
+    Returns a dictionary containing two lists: 'baseWindow' and 'respWindow' for files (rows) in the DataFrame.
+    Adjust time windows automatically based on file 'STIMULUS_START_*_sec*' in the corresponding directory.
+
+    Args:
+        df (pd.DataFrame): DataFrame containing file information, with column: 'dir' (experiment directory).
+        t_base (tuple, optional): Baseline time window.
+        t_resp (tuple, optional): Response time window.
+        stimStart (float, optional): Stimulus start time (in seconds) by default. Defaults to 3.0.
+
+    Returns:
+        time_windows (dict): A dictionary with keys 'baseWindow' and 'respWindow', each mapping to a list of tuples.
+    """
+
+    # Initialize lists for baseline and response time windows
+    base_windows = []
+    resp_windows = []
+
+    for _, row in df.iterrows():
+        # For each row, search for file indicating stimulus start time in corresponding experiment directory
+        # Filename example: 'STIMULUS_START_2_sec.txt'
+        stimulus_file = glob(os.path.join(row['dir'], 'STIMULUS_START_*_sec*'))
+        
+        if stimulus_file:
+            # If file exists, take the first matching file
+            fstart = stimulus_file[0]
+            match = re.search(r'START_([0-9]+)_sec', fstart)
+            if match:
+                # Extract stimulus start time
+                start_time = int(match.group(1))
+                # Adjust baseline and response time windows accordingly
+                base_window = tuple(x + (start_time-stimStart) for x in t_base)
+                resp_window = tuple(x + (start_time-stimStart) for x in t_resp)
+            else:
+                raise ValueError(f'Unable to parse stimulus start file: {fstart}')
+        else:
+            # If file not found, use default baseline and response time windows
+            base_window = t_base
+            resp_window = t_resp
+
+        # Append time windows to their respective lists
+        base_windows.append(base_window)
+        resp_windows.append(resp_window)
+
+    # Creating a dictionary containing keys 'baseWindow' and 'respWindow'
+    time_windows = {'baseWindow': base_windows, 'respWindow': resp_windows}
+
+    return time_windows

@@ -207,12 +207,15 @@ def qcamPath2table(exprmntPaths: list[str], format: str = 'MAK', subfolder: bool
     return df
 
 
-def loadQCamTable(df: pd.DataFrame) -> tuple[pd.DataFrame, dict, dict]:
+def loadQCamTable(df: pd.DataFrame, preExpose_excl: bool = False, loopGap: float = 30) -> tuple[pd.DataFrame, dict, dict]:
     """
     Processes a DataFrame of qcam metadata and returns the updated DataFrame along with image and header data.
 
     Args:
         df (pd.DataFrame): A DataFrame containing qcam metadata, including a column named 'qcam' with paths to `.qcamraw` files.
+        preExpose_excl (bool, optional): Whether to remove pre-exposing trials.
+        loopGap (float, optional): Time gap (in seconds) between adjacent trials within the loop.
+                                   If `preExpose_excl` is `True`, first few trials with gaps above this threshold will be removed.
 
     Returns:
         tuple:
@@ -228,6 +231,7 @@ def loadQCamTable(df: pd.DataFrame) -> tuple[pd.DataFrame, dict, dict]:
         - Assumes the qcam header contains a 'ROI' field formatted as "startX,startY,endX,endY".
         - Timestamps in the qcam header are expected to follow the format '%m-%d-%Y_%H:%M:%S'.
         - Additional processing merges extracted metadata into the input DataFrame.
+        - Pre-exposing trials in a loop may not be detected by time gap thus not removed.
 
     Example:
         >>> df = pd.DataFrame({'qcam': ['path/to/file1.qcamraw', 'path/to/file2.qcamraw']})
@@ -238,16 +242,46 @@ def loadQCamTable(df: pd.DataFrame) -> tuple[pd.DataFrame, dict, dict]:
         1  path/to/file2.qcamraw      600  2025-01-14 11:00:00  (256, 256)
 
     """
+
     qcam2img,qcam2header = {},{}
     timeStamps = []
+
+    # Process each qcam file and extract metadata
     for _,b in df.iterrows():
         qcam2img[b.qcam],qcam2header[b.qcam] = extract_qcamraw(b.qcam)
         _, _, x, y = map(int, qcam2header[b.qcam]['ROI'].replace(' ','').split(','))
 
         timeStamps.append((b.qcam, qcam2img[b.qcam].shape[2], qcam2header[b.qcam]['File_Init_Timestamp'], (y,x)))
 
-    df = df.merge(pd.DataFrame(timeStamps, columns=['qcam','nFrames','timestamp_init','dim_YX']), on='qcam')
-    df['timestamp_init'] = pd.to_datetime(df['timestamp_init'], format='%m-%d-%Y_%H:%M:%S')
+    # Update dataframe only when new columns are not included
+    if 'timestamp_init' not in df.columns:
+        # Merge extracted metadata into the DataFrame
+        df = df.merge(pd.DataFrame(timeStamps, columns=['qcam','nFrames','timestamp_init','dim_YX']), on='qcam')
+        df['timestamp_init'] = pd.to_datetime(df['timestamp_init'], format='%m-%d-%Y_%H:%M:%S')
+    
+    # Rearrange traces in ascending time order
+    df = df.sort_values(by='timestamp_init', ignore_index=True)
+
+    if preExpose_excl:
+        # Remove first few pre-exposing trials before the loop for each animal and treatment
+        def remove_preExposeTrial(df_group):
+            # Calculate time gaps (in seconds) between adjacent trials
+            df_group['time_diff'] = df_group['timestamp_init'].diff().dt.total_seconds()
+            
+            # Identify the first and last trial where the time gap is below 30 seconds
+            first_loopTrial_index = df_group[df_group['time_diff'] <= loopGap].index[0] - 1    # -1 because this is the second trial of the loop
+            last_loopTrial_index = df_group[df_group['time_diff'] <= loopGap].index[-1] + 1    # +1 to include the last trial of the loop
+            
+            # Only remain loop trials in between
+            df_group_drop = df_group.loc[first_loopTrial_index:last_loopTrial_index].reset_index(drop=True)
+            
+            # Drop the newly-added 'time_diff' column
+            df_group_drop = df_group_drop.drop(columns=['time_diff'])
+            
+            return df_group_drop
+
+        # Group the data by 'dir' and 'treatment' and apply the function to each group
+        df = df.groupby(['dir', 'treatment'], sort=False)[df.columns.tolist()].apply(remove_preExposeTrial).reset_index(drop=True)
 
     return df,qcam2img,qcam2header
     

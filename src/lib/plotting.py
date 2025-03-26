@@ -1,11 +1,15 @@
 import numpy as np
 import pandas as pd
 
+import colorsys
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
 from matplotlib.widgets import Slider, Button
 from matplotlib.animation import FuncAnimation, PillowWriter
 import plotly.express as px
 import plotly.graph_objs as go
+from plotly.subplots import make_subplots
+import seaborn as sns
 
 from datetime import datetime
 import os
@@ -80,67 +84,608 @@ def experimentAvgPlot(dPath: str = None, qFiles: list = None,
     fig.show()
 
 
-def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict, **kwargs):
+def plot_respHeatmap(df: pd.DataFrame, dB_plot: int = 80, same_scale: bool = True, 
+                     ROIcontour: np.ndarray | dict[str, np.ndarray] | None = None, **kwargs):
+    """
+    Plot baseline gray-scaled wide-field images and response heatmaps for each treatment.
+    Optionally add ROI mask contours to images for visualization.
 
-    fig = go.Figure()
-    colors = px.colors.qualitative.Plotly  # Use Plotly's default qualitative colors
-    label_to_color = {}  # Dictionary to store color mappings
+    Args:
+        df (pd.DataFrame): Metadata dataframe including columns: 'qcam', 'dB', and 'treatment'.
+        dB_plot (int, optional): Sound intensity (in dB) to plot response heatmaps. Defaults to 80.
+                                 If None, plot average across all intensities.
+        ROIcontour (dict, optional): ROI's vertex coordinates, including a repeated first vertex to close the shape.
+                                     Either: - 2D numpy array (same ROI for all treatments).
+                                             - Dictionary mapping treatments to 2D arrays (different ROIs for each treatment).
+                                             - None (no contours shown).
+        same_scale (bool, optional): If 'True', use same color scaling in all heatmaps.
+        **kwargs: Optional arguments that will override default.
+            examples: t_baseline (tuple): start and end time points (inclusive) of baseline to plot wide-field images.
+                      t_temporalAvg (tuple): start and end time points (inclusive) of response to plot response heatmaps.
+    """
+    # Check whether required columns exist
+    required_cols = ['qcam', 'dB', 'treatment']
+    if not all(col in df.columns for col in required_cols):
+        raise ValueError(f"Dataframe must contain the following columns: {required_cols}")
 
-    for i,(label, df_group) in enumerate(df.groupby(['dB','treatment'])):
+    # Validate argument 'ROIcontour'
+    if ROIcontour is not None:
+        if not isinstance(ROIcontour, (np.ndarray, dict)):
+            raise ValueError("'ROIcontour' must be a numpy array or dictionary.")
+        if isinstance(ROIcontour, dict):
+            missing = set(df['treatment'].unique()) - set(ROIcontour.keys())
+            if missing:
+                raise ValueError(f"Dataframe contains treatments not in 'ROIcontour': {missing}")
 
-        imgSeries = np.array(itemgetter(*df_group['qcam'])(qcam2img)) #shape [trace, Y, X, frame]
-        roi_mask = kwargs.get('roi_mask',np.ones(imgSeries.shape[1:3]))
-        signal = imgSeries[:,roi_mask==1,:].mean(axis=1)
+    # Initialize figure
+    treatments = df['treatment'].unique()
+    nTreat = len(treatments)
+    fig, ax = plt.subplots(nTreat, 2, figsize=(10, 3*nTreat))
 
-        _,dF,_ = signalProcess.dFFcalc(signal,**kwargs)
+    if same_scale:
+        # Get global min and max dFF for consistent color scaling in heatmaps
+        all_spatialDFF = []
+        for treatment, df_group in df.groupby('treatment', sort=False):
+            qcams = (df_group['qcam'].tolist() if dB_plot is None 
+                    else df_group[df_group['dB'] == dB_plot]['qcam'].tolist())
+            _, _, _, spatialDFF = imgProcess.qcams2roiTrace(qcams, **kwargs)
+            all_spatialDFF.append(spatialDFF)
+        dFF_min, dFF_max = min(dFF.min() for dFF in all_spatialDFF), max(dFF.max() for dFF in all_spatialDFF)
 
-        u,uPs,uMs = signalProcess.meanPlusMinusSem(dF)
-        t = signalProcess.getTimeVec(len(u))
-        label_str = str(list(map(str, label)))
+    # Plot baseline gray-scaled wide-field images and response heatmaps for each treatment
+    for i, treatment in enumerate(treatments):
+        qcams = (df[df['treatment'] == treatment]['qcam'].tolist() if dB_plot is None 
+                else df[(df['treatment'] == treatment) & (df['dB'] == dB_plot)]['qcam'].tolist())
 
-        color = colors[i % len(colors)]  # Cycle through colors
-        label_to_color[label_str] = color  # Store color for legend consistency
+        # Calculate spatial dFF for response heatmap
+        _, _, imgs, spatialDFF = imgProcess.qcams2roiTrace(qcams, **kwargs)
 
-        fig.add_traces(
-            [
+        # Plot images with labels/titles and colorbars
+        ax[i,0].imshow(imgs.mean(axis=(0,-1)), 'gray')
+        vmin, vmax = (dFF_min, dFF_max) if same_scale else (None, None)
+        respHeat = ax[i,1].imshow(spatialDFF, cmap='jet', vmin=vmin, vmax=vmax)
+        ax[i,0].set_ylabel(treatment, rotation=0, ha='right', va='center', fontsize=14)
+        if i == 0:
+            ax[i,0].set_title("Wide-field", fontsize=14)
+            ax[i,1].set_title("Response heatmap", fontsize=14)
+        plt.colorbar(respHeat, ax=ax[i,1])
+    
+        # Add contours if provided
+        if ROIcontour is not None:
+            contour = ROIcontour if isinstance(ROIcontour, np.ndarray) else ROIcontour[treatment]
+            for j in range(2):
+                ax[i,j].plot(contour[:,0], contour[:,1], 'w-', linewidth=2)
+    
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_traces(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF_ROI_raw', 
+                sepPlot: bool = False, stimStart: float = 3.0, alpha_ind: float = 0.3, **kwargs):
+    """
+    Plot individual and averaged traces for a given sound intensity across different treatments.
+
+    Args:
+        df (pd.DataFrame): Metadata dataframe including columns: 
+                           'dB', 'treatment', 'time' (or 'nFrames'), and column for response traces.
+        dB_plot (int, optional): Sound intensity (in dB) for traces to be plotted. Defaults to 80.
+        resp_col (str, optional): Column name for response traces. Defaults to 'dFF_ROI_raw'.
+        sepPlot (bool, optional): If True, plot treatments in separate subplots; otherwise, plot in one plot. 
+                                  Defaults to 'False'.
+        stimStart (float, optional): Stimulus start time (in seconds). Defaults to 3.0.
+        alpha_ind (float, optional): Transparency for individual traces. Defaults to 0.3.
+        **kwargs: Optional arguments that will override default.
+    """
+    
+    # Check whether required columns exist
+    required_cols = ['dB', 'treatment', resp_col]
+    if not all(col in df.columns for col in required_cols):
+        raise ValueError(f"DataFrame must contain the following columns: {required_cols}")
+    
+    # Check whether specified sound level exists
+    if dB_plot not in df['dB'].unique():
+        raise ValueError(f"dB_plot={dB_plot} not found in the 'dB' column.")
+    
+    # Filter the DataFrame for the specified sound intensity
+    filtered_df = df[df['dB'] == dB_plot].reset_index(drop=True)
+    
+    # Get time vector
+    if 'time' in filtered_df.columns:
+        time = filtered_df['time'].iloc[0]
+    elif 'nFrames' in filtered_df.columns:
+        time = signalProcess.getTimeVec(filtered_df['nFrames'].iloc[0], **kwargs)
+    else:
+        raise ValueError("Cannot access time vector. Neither 'time' nor 'nFrames' column found in dataframe.")
+
+    # Extract traces for each treatment
+    traces = {}
+    treatments = filtered_df['treatment'].unique()
+    for treatment in treatments:
+        treatment_df = filtered_df[filtered_df['treatment'] == treatment]
+        traces[treatment] = {
+            'individual': np.array(list(treatment_df[resp_col])).T,
+            'averaged': np.mean(np.array(list(treatment_df[resp_col])).T, axis=1)
+        }
+    
+    # Create the figure and axes
+    if sepPlot:
+        fig, ax = plt.subplots(len(treatments), 1, figsize=(10, 4 * len(treatments)))
+        if len(treatments) == 1:
+            ax = [ax]  # Ensure ax is always a list for consistency
+    else:
+        fig, ax = plt.subplots(figsize=(10, 4))
+        ax = [ax]  # Ensure ax is a list for consistency
+    
+    # Plot the traces
+    for i, treatment in enumerate(treatments):
+        # Use discrete colormap (from matplotlib) for different treatments
+        color = plt.cm.tab10(i)
+        current_ax = ax[i] if sepPlot else ax[0]
+        
+        # Plot individual traces
+        for j in range(traces[treatment]['individual'].shape[1]):
+            current_ax.plot(time, traces[treatment]['individual'][:, j], color='gray' if sepPlot else color, 
+                            alpha=alpha_ind, label=f'{treatment} Individual' if j == 0 else "")
+        
+        # Plot averaged trace
+        current_ax.plot(time, traces[treatment]['averaged'], color=color, linewidth=2, 
+                        label=f'{treatment} Averaged')
+        
+        # Add labels, title, and stimulus line
+        current_ax.set_xlabel('time (s)', size=12)
+        current_ax.set_ylabel(resp_col, size=12)
+        current_ax.set_title(f"{treatment}", size=12) if sepPlot else None
+        current_ax.axvline(x=stimStart, color='k', linestyle='--')
+        current_ax.legend()
+    
+    fig.suptitle(f"Individual and Averaged Traces: {dB_plot} dB", size=14)
+    plt.tight_layout()
+    plt.show()
+
+
+def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict, dFResp: bool = False, 
+                            sepPlot: bool = True, errBar: bool = True, **kwargs):
+    """
+    Plot fluorescence response (dFF or dF) traces by treatment and dB.
+
+    Args:
+        df (pd.DataFrame): Metadata dataframe including columns `dB` and `treatment`.
+        qcam2img (dict): Dictionary mapping each qcam file path to its corresponding image data.
+        dFResp (bool, optional): If true, calculate dF response rather than dFF.
+        sepPlot (bool, optional): Whether to create separate subplots for each treatment.
+                                  - `True`: For each subplot, lower dBs are in cooler colors and higher dBs are in warmer colors.
+                                  - `False`: Treatments are distinguished by different color types, 
+                                             with lower dBs in lighter colors and higher dBs in darker colors.
+        errBar (bool, optional): If true, add error bars to curves.
+        **kwargs: Optional keyword arguments.
+            example: roi_mask (np.ndarray): 2D binary mask array specifying the region of interest.
+    """
+
+    # Sort dataframe by treatment (consistent with initial order) and dB (in ascending order)
+    df_sorted = pd.concat([group.sort_values(by='dB') for _, group in df.groupby('treatment', sort=False)])
+
+    # Initialize figure
+    if sepPlot:
+        # Map cooler colors to lower dBs and warmer colors to higher dBs
+        dB_values = df_sorted['dB'].unique()
+        colors = cm.coolwarm(np.linspace(0, 1, len(dB_values)))
+        colors = [f"rgb({int(r*255)}, {int(g*255)}, {int(b*255)})" for r, g, b, _ in colors]
+        dB2color = {dB: colors[i] for i, dB in enumerate(dB_values)}
+
+        # Create subplots with one row per treatment
+        treat_values = df_sorted['treatment'].unique()
+        fig = make_subplots(rows=len(treat_values), cols=1, vertical_spacing=0.2,
+                            subplot_titles=[f"{treatment}" for treatment in treat_values])
+    else:
+        # Use discrete colormap (from matplotlib) for different treatments
+        colors = plt.cm.tab10.colors
+        max_dB = df_sorted['dB'].max()  # Maximum dB value for normalization
+        treat_values = df_sorted['treatment'].unique()
+        treat2color = {treat: f"rgb({int(r*255)}, {int(g*255)}, {int(b*255)})" for treat, (r, g, b) in zip(treat_values, colors)}
+        fig = go.Figure()
+
+    # Calculate fluorescence response within each treatment/dB combination
+    for (treatment, dB), df_group in df_sorted.groupby(['treatment', 'dB'], sort=False):
+        imgSeries = np.array(itemgetter(*df_group['qcam'])(qcam2img))  # Shape: [trace, Y, X, frame]
+        roi_mask = kwargs.get('roi_mask', np.ones(imgSeries.shape[1:3]))
+        signal = imgSeries[:, roi_mask == 1, :].mean(axis=1)
+
+        dFF, dF, _ = signalProcess.dFFcalc(signal, **kwargs)
+        response = dF if dFResp else dFF
+        mean, upper, lower = signalProcess.meanPlusMinusSem(response)
+        t = signalProcess.getTimeVec(len(mean), **kwargs)
+
+        label_str = f"{treatment}, {dB} dB"
+
+        if sepPlot:
+            # Get cool-to-warm color based on dB level
+            color = dB2color[dB]
+            rgba_fill = color.replace("rgb", "rgba").replace(")", ", 0.1)")  # Add transparency of 10%
+            row = list(treat_values).index(treatment) + 1  # +1 because subplot rows are 1-indexed
+        else:
+            # Adjust lightness based on dB level
+            base_color = treat2color[treatment]
+            r, g, b = [int(val) for val in base_color.strip("rgb(").strip(")").split(",")]
+            lightness = 2.5 - 2 * (dB / max_dB)  # Normalize dB to [0.5, 2.5] for lightness
+            h, l, s = colorsys.rgb_to_hls(r/255, g/255, b/255)
+            r_new, g_new, b_new = colorsys.hls_to_rgb(h, l*lightness, s)
+            color = f"rgb({int(r_new*255)}, {int(g_new*255)}, {int(b_new*255)})"
+            rgba_fill = color.replace("rgb", "rgba").replace(")", ", 0.1)")  # Add transparency of 10%
+            row, col = None, None  # No subplots
+
+        # Add mean traces
+        fig.add_trace(
+            go.Scatter(
+                name=label_str,
+                x=t,
+                y=mean,
+                mode='lines',
+                line=dict(color=color),
+                legendgroup=label_str,
+                showlegend=True
+            ),
+            row=row, col=1 if sepPlot else None
+        )
+
+        if errBar:
+            # Add upper bound of error bar
+            fig.add_trace(
                 go.Scatter(
                     name=label_str,
                     x=t,
-                    y=u,
-                    mode='lines',
-                    line=dict(color=color),
-                    legendgroup=label_str,
-                ),
-                go.Scatter(
-                    name=str(list(map(str,label))),
-                    x=t,
-                    y=uPs,
+                    y=upper,
                     mode='lines',
                     line=dict(width=0),
                     legendgroup=label_str,
                     showlegend=False
                 ),
+                row=row, col=1 if sepPlot else None
+            )
+
+            # Add lower bound of error bar
+            fig.add_trace(
                 go.Scatter(
-                    name=str(list(map(str,label))),
+                    name=label_str,
                     x=t,
-                    y=uMs,
+                    y=lower,
                     line=dict(width=0),
                     mode='lines',
-                    fillcolor=f"rgba{tuple(int(color.strip('#')[i:i+2], 16) for i in (0, 2, 4)) + (0.2,)}",  # Convert hex to rgba with 20% opacity
+                    fillcolor=rgba_fill,
                     legendgroup=label_str,
                     fill='tonexty',
                     showlegend=False
-                )
-            ]
-        )
+                ),
+                row=row, col=1 if sepPlot else None
+            )
 
-    # Label x-axis as "Time (s)"
+    # Update layout
     fig.update_layout(
-                    title=f"{df.dir.unique()[0]}: dF at each sound level by treatment",
-                    xaxis_title="time (s)", 
-                    yaxis_title=("dF_roi" if "roi_mask" in kwargs else "dF")
-                    )
+        title=f"{df_sorted.dir.unique()[0]}: Fluorescence response at each sound level by treatment",
+        xaxis_title="time (s)",
+        yaxis_title=("dF" if dFResp else "dFF")
+    )
+
+    if sepPlot:
+        # Adjust layout for subplots
+        fig.update_layout(height=410 * len(treat_values))  # Adjust height based on the number of treatments
+        for i in range(1, len(treat_values) + 1):  # Add X- and Y-axis legends for each subplot
+            fig.update_xaxes(title_text="time (s)", row=i, col=1)
+            fig.update_yaxes(title_text=("dF" if dFResp else "dFF"), row=i, col=1)
+    
     fig.show()
+
+
+def plotTrace_reAnimal(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF_ROI_raw', 
+                       sepPlot: bool = True, **kwargs):
+    """
+    Plot averaged traces with error bars for a given sound intensity re treatments and animals.
+
+    Args:
+        df (pd.DataFrame): Metadata dataframe including columns: 
+                           'dir', 'dB', 'treatment', 'time' (or 'nFrames'), and column for response traces.
+        dB_plot (int, optional): Sound intensity (in dB) for traces to be plotted. Defaults to 80.
+        resp_col (str, optional): Column name for response traces. Defaults to 'dFF_ROI_raw'.
+        sepPlot (bool, optional): If True, plot treatments in separate subplots; otherwise, plot in one plot. 
+                                  Defaults to 'True'.
+        **kwargs: Optional arguments that will override default.
+    """
+
+    # Check whether required columns exist
+    required_cols = ['dir', 'dB', 'treatment', resp_col]
+    if not all(col in df.columns for col in required_cols):
+        raise ValueError(f"Dataframe must contain the following columns: {required_cols}")
+    
+    # Check whether specified sound level exists
+    if dB_plot not in df['dB'].unique():
+        raise ValueError(f"{dB_plot} not found in the 'dB' column.")
+    
+    # Filter the DataFrame for the specified sound intensity
+    filtered_df = df[df['dB'] == dB_plot].reset_index(drop=True)
+    
+    # Create a list including time vectors of all trials
+    if 'time' in filtered_df.columns:
+        time_vectors = filtered_df['time'].tolist()
+    elif 'nFrames' in filtered_df.columns:
+        time_vectors = [signalProcess.getTimeVec(nFrames, **kwargs) for nFrames in filtered_df['nFrames']]
+    else:
+        raise ValueError("Cannot access time vector. Neither 'time' nor 'nFrames' column found in dataframe.")
+    
+    # Ensure sound stimuli start at the same time for all traces
+    trace_lengths = filtered_df['time'].apply(len) if 'time' in filtered_df.columns else filtered_df['nFrames']
+    if 'baseWindow' not in filtered_df.columns and 'respWindow' not in filtered_df.columns:
+        if trace_lengths.nunique() > 1:
+            # Raise error when traces have more than one length and cannot be aligned according to time window
+            raise ValueError("Traces have different lengths. Unable to align them based on baseline or response time windows.")
+    else:
+        # Align the baseline or response time window across traces from different animals
+        windows = filtered_df['baseWindow'].tolist() if 'baseWindow' in filtered_df.columns else filtered_df['respWindow'].tolist()
+        # Set the latest time window as reference (to avoid negative values in time vectors)
+        ref_window = max(windows, key=lambda x: x[0])    # With the latest start time
+        for i, (window, time_vector) in enumerate(zip(windows, time_vectors)):
+            if window != ref_window:
+                shift = window[0] - ref_window[0]
+                # Shift the time vector
+                time_vectors[i] = time_vector - shift
+    
+    # Initialize data for plotting
+    plot_data = {}
+
+    # Determine the full time range of time vectors after alignment
+    min_time = 0    # Bacause time vectors start at 0, and are all non-negative after alignment
+    max_time = max(max(time_vector) for time_vector in time_vectors)
+
+    # Group by animal and treatment
+    for (animal, treatment), group in filtered_df.groupby(['dir', 'treatment'], sort=False):
+        traces = np.array(group[resp_col].tolist())
+        mean, upper, lower = signalProcess.meanPlusMinusSem(traces)
+        time_vector = time_vectors[group.index[0]]  # Use the time vector of the first trace in the group
+
+        # Pad the time vector and traces to match the full time range
+        if min(time_vector) > min_time:
+            # Pad at the beginning
+            padding_length = int((min(time_vector) - min_time) / np.diff(time_vector)[0])
+            mean = np.pad(mean, (padding_length, 0), constant_values=np.nan)
+            upper = np.pad(upper, (padding_length, 0), constant_values=np.nan)
+            lower = np.pad(lower, (padding_length, 0), constant_values=np.nan)
+            time_vector = np.pad(time_vector, (padding_length, 0), constant_values=np.nan)
+
+        if max(time_vector) < max_time:
+            # Pad at the end
+            padding_length = int((max_time - max(time_vector)) / np.diff(time_vector)[0])
+            mean = np.pad(mean, (0, padding_length), constant_values=np.nan)
+            upper = np.pad(upper, (0, padding_length), constant_values=np.nan)
+            lower = np.pad(lower, (0, padding_length), constant_values=np.nan)
+            time_vector = np.pad(time_vector, (0, padding_length), constant_values=np.nan)
+
+        # Store the padded data
+        plot_data[(animal, treatment)] = (mean, upper, lower, time_vector)
+    
+    # Create the plot
+    treatments = filtered_df['treatment'].unique()
+    if sepPlot:
+        # Create subplots for each treatment
+        fig = make_subplots(rows=len(treatments), cols=1, subplot_titles=[f"{treat}" for treat in treatments],
+                            vertical_spacing=0.15)
+    else:
+        # Create a single plot
+        fig = go.Figure()
+    
+    # Assign colors
+    animals = filtered_df['dir'].unique()
+    animal_colors = {animal: f"hsl({(i * 360 / len(animals)) % 360}, 50%, 50%)" for i, animal in enumerate(animals)}
+    
+    # Track which animals have already been added to the legend
+    legend_added = set()
+
+    # Plotting
+    for i, ((animal, treatment), (mean, upper, lower, time_vector)) in enumerate(plot_data.items()):
+        if sepPlot:
+            # In separate subplots, use the same color for the same animal across treatments
+            color = animal_colors[animal]
+            label = f"{animal}" if animal not in legend_added else None  # Add label only once
+            if animal not in legend_added:
+                legend_added.add(animal)
+        else:
+            # In one plot, use the same base color for the same animal, but vary lightness for treatments
+            base_color = animal_colors[animal]
+            # Extract hue from the base color
+            hue = float(base_color.split('(')[1].split(',')[0])  # Extract hue as a float
+            lightness = 0.3 + 0.4 * list(treatments).index(treatment) / (len(treatments) - 1)  # Vary lightness
+            color = f"hsl({int(hue)}, 50%, {int(lightness * 100)}%)"  # Convert hue to integer
+            label = f"{animal} {treatment}"  # Show full label for each trace
+        
+        if sepPlot:
+            row = list(treatments).index(treatment) + 1
+            col = 1
+        else:
+            row, col = None, None
+        
+        # Add mean trace
+        fig.add_trace(
+            go.Scatter(
+                x=time_vector,
+                y=mean,
+                mode='lines',
+                name=label,
+                line=dict(color=color),
+                legendgroup=animal if sepPlot else f"{animal}_{treatment}",  # Link traces for the same animal in sepPlot
+                showlegend=label is not None  # Show legend only for the first occurrence of each animal
+            ),
+            row=row, col=col
+        )
+        
+        # Add error bands (upper and lower bounds)
+        fig.add_trace(
+            go.Scatter(
+                x=time_vector,
+                y=upper,
+                mode='lines',
+                line=dict(width=0),
+                showlegend=False,
+                legendgroup=animal if sepPlot else f"{animal}_{treatment}"
+            ),
+            row=row, col=col
+        )
+        fig.add_trace(
+            go.Scatter(
+                x=time_vector,
+                y=lower,
+                mode='lines',
+                line=dict(width=0),
+                fillcolor=color.replace("hsl", "hsla").replace(")", ", 0.2)"),  # Set transparency = 0.2
+                fill='tonexty',
+                showlegend=False,
+                legendgroup=animal if sepPlot else f"{animal}_{treatment}"
+            ),
+            row=row, col=col
+        )
+    
+    # Update layout
+    fig.update_layout(
+        title=f"Averaged traces across animals at dB={dB_plot}",
+        xaxis_title="Time (s)",
+        yaxis_title=resp_col,
+        height=450 * len(treatments) if sepPlot else 500, 
+        legend=dict(y=0.5)
+    )
+    
+    if sepPlot:
+        # Update subplot titles and axes
+        for i, treatment in enumerate(treatments):
+            fig.update_xaxes(title_text="Time (s)", row=i+1, col=1)
+            fig.update_yaxes(title_text=resp_col, row=i+1, col=1)
+    
+    fig.show()
+
+
+def plot_avgDFF_acrossAnimal(df: pd.DataFrame, measure_col: str = 'dB', resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak', 
+                             avgAnimal: bool = True, normalize: str = None, SEMbar: bool = True, 
+                             lineplot: bool = True, **kwargs) -> pd.DataFrame:
+    """
+    Plot barplots or lineplots with error bars for fluorescence peak response averaged across animals re sound intensities.
+    Create a new dataframe including the mean, SD, and SEM of peak response for each sound level.
+
+    Args:
+        df (pd.DataFrame): Metadata dataframe including columns: 'dir', 'treatment', 'dB', and column for the response variable.
+        measure_col (str, optional): Column name for the independent variable. Can be sound intensity or frequency.
+                                     Defaults to 'dB' (sound intensity).
+        resp_col (str, optional): Column name for the response variable. Defaults to 'dFF_ROI_linFilt_butterFilt_peak'.
+        avgAnimal (bool, optional): Whether to average peak response across animals or individual trials.
+                                    - 'True': Average in two steps:
+                                              First average peak responses within each animal, then average the mean across animals.
+                                              Error bars represent SEM or SD across animals.
+                                    - 'False': Average in one step:
+                                               Average peak responses of all individual trials from all animals.
+                                               Error bars represent SEM or SD across trials.
+                                    Defaults to 'True'.
+        normalize (str, optional): Whether to normalize peak response to the max response (in percentage). 
+                                   - 'byGroup': For each animal, calculate the mean for each sound level, then normalize these means to the max mean.
+                                                Only applicable when 'avgAnimal' is 'True'.
+                                   - 'byTrial': For each animal, normalize all individual trials to the trial with the max response.
+                                   - None: No normalization is applied.
+        SEMbar (bool, optional): If 'True', use standard error (SEM) for error bars. If 'False', use standard deviation (SD).
+        lineplot (bool, optional): If 'False', plot barplots instead of the lineplot. Defaults to 'True'.
+        **kwargs: Optional arguments that will override default.
+            example: capsize (float, optional): Error bar cap size. Defaults to no caps.
+
+    Returns:
+        df_avg (pd.DataFrame): Statistics dataframe across animals ('dir's) including columns: 
+                               'treatment', 'dB', 'count', 'mean', 'std', and 'sem'.
+    
+    Notes:
+        - If 'avgAnimal' is 'False', animals may have different weights due to varying trial counts for each animal.
+        - normalize='byGroup' is only applicable when 'avgAnimal' is 'True'.
+    """
+
+    # Check whether required columns exist
+    required_col = ['dir', 'treatment', measure_col, resp_col]
+    if not all(col in df.columns for col in required_col):
+        raise ValueError(f"DataFrame must contain the following columns: {required_col}")
+    
+    # Check whether normalization is applicable
+    if normalize == 'byGroup' and not avgAnimal:
+        warnings.warn("Normalization by group cannot be applied when 'avgAnimal' is False.")
+    
+    # Group by 'dir' and 'treatment' and extract unique 'dB' values
+    dB_lists = list(df.groupby(['dir', 'treatment'], sort=False)[measure_col].unique())
+
+    # Find the common 'dB' levels across all animals
+    common_dB = set(dB_lists[0])    # Start with the first list
+    for item in dB_lists[1:]:    # Iterate over the remaining lists
+        common_dB.intersection_update(item)
+    if not common_dB:
+        raise ValueError(f"No common '{measure_col}' values found across all animals and treatments.")
+    common_dB = sorted(common_dB)   # Sort 'dB' values in ascending order
+
+    # Filter rows where 'dB' is in the common_dB list
+    df_filtered = df[df[measure_col].isin(common_dB)].reset_index(drop=True)
+
+    if normalize == 'byTrial':
+        # Normalize each trial's response to the max response within the same animal
+        df_filtered[resp_col] = df_filtered.groupby(['dir'], sort=False)[resp_col].transform(lambda x: (x / x.max()) * 100)
+        print("Normalized on the trial basis.")
+
+    if avgAnimal:
+        # Calculate the mean within each dir for each treatment/dB combination
+        df_grouped = df_filtered.groupby(['dir', 'treatment', measure_col], as_index=False, sort=False)[resp_col].mean().reset_index(drop=True)
+        if normalize == 'byGroup':
+            # Normalize mean response of each treatment/dB combination group to the max mean response within the same animal
+            df_grouped[resp_col] = df_grouped.groupby(['dir'], sort=False)[resp_col].transform(lambda x: (x / x.max()) * 100)
+            print('Normalized on the treatment/dB combination group basis.')
+    else:
+        # Maintain the unaveraged original data of each individual trial
+        df_grouped = df_filtered.loc[:, ['treatment', measure_col, resp_col]]
+
+    # Calculate the mean, standard deviation (SD), and standard error (SEM) across dirs for each treatment/dB combination
+    agg_dict = {
+        f'count_{resp_col}': (resp_col, 'size'), 
+        f'mean_{resp_col}': (resp_col, 'mean'), 
+        f'std_{resp_col}': (resp_col, 'std')
+    }
+    df_avg = df_grouped.groupby(['treatment', measure_col], as_index=False, sort=False).agg(**agg_dict)
+    df_avg[f'sem_{resp_col}'] = df_avg[f'std_{resp_col}'] / np.sqrt(df_avg[f'count_{resp_col}'])
+
+    # Fill NaN standard deviations or errors with 0 (if there's only one dir for a treatment/dB combination)
+    df_avg[f'std_{resp_col}'] = df_avg[f'std_{resp_col}'].fillna(0)
+    df_avg[f'sem_{resp_col}'] = df_avg[f'sem_{resp_col}'].fillna(0)
+
+    # Sort the DataFrame by 'dB' in ascending order while keeping the original order of 'treatment'
+    # Otherwise, x-ticks cannot match 'dB' values in the correct order
+    df_avg = pd.concat([group.sort_values(by=measure_col) for _, group in df_avg.groupby('treatment', sort=False)]).reset_index(drop=True)
+
+    if lineplot:
+        # Plot lineplot
+        plt.figure(figsize=(8,6))
+        for treatment, group in df_avg.groupby('treatment', sort=False):
+            plt.errorbar(group[measure_col], group[f'mean_{resp_col}'], 
+                         yerr=group[f'sem_{resp_col}'] if SEMbar else group[f'std_{resp_col}'], 
+                         label=treatment, marker='o', **kwargs)
+        plt.xlabel("Sound Intensity (dB)")
+        plt.ylabel(f"{resp_col} Response" if normalize is None else f"{resp_col} Response (%)")
+        plt.legend(title="Treatment")
+        plt.title("Response by Sound Intensity and Treatment")
+        plt.show()
+
+    else:
+        # Plot barplots
+        g = sns.FacetGrid(df_avg, col='treatment', sharey=True, height=4)
+
+        # Define the function to plot bars with error bars
+        def plot_bars_with_error(data, measure_col, **kwargs):
+            x = np.arange(len(data[measure_col]))
+            yerr = data[f'sem_{resp_col}'] if SEMbar else data[f'std_{resp_col}']
+            plt.bar(x, data[f'mean_{resp_col}'], yerr=yerr, **kwargs)
+            plt.xticks(x, data[measure_col])
+
+        # Map the plotting function to the FacetGrid
+        g.map_dataframe(plot_bars_with_error, measure_col=measure_col, **kwargs)
+
+        # Add labels and titles
+        g.set_axis_labels("Sound Intensity (dB)", f"{resp_col} Response" if normalize is None else f"{resp_col} Response (%)")
+        g.set_titles(col_template="{col_name}")
+        plt.show()
+
+    return df_avg
 
 
 def plotDFFSeriesMask(imgSeries: np.ndarray, 

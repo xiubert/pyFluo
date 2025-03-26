@@ -1,6 +1,13 @@
 from scipy.signal import butter, filtfilt
 import numpy as np
+import pandas as pd
 from typing import Tuple
+import os
+import warnings
+import joblib
+from glob import glob
+
+import lib.metadataProcess as metadataProcess
 
 
 def getTimeVec(nFrames: int, 
@@ -43,23 +50,36 @@ def butterFilter(signal: np.ndarray,
     Simple helper function for a lowpass butterworth filter.
 
     Args:
-        signal (numpy array): signal array to be filtered
-        sampleFreq (int): sampling frequency of the signal
-        cutoff_freq: filter cutoff frequency
-        order: filter order ('steepness' of signal drop-off at cutoff_freq)
+        signal (numpy array): 1D or 2D signal array to be filtered of shape [frame] or [traceNumber, frame]
+        sample_freq (int): sampling frequency of the signal
+        cutoff_freq (float): filter cutoff frequency
+        order (int): filter order ('steepness' of signal drop-off at cutoff_freq)
         **kwargs: Optional arguments that will override default.
 
     Returns:
-        filtered_signal (numpy array): lowpass filtered signal
+        filtered_signal (numpy array): lowpass filtered signal (same shape as input signal)
 
     """
     # Optionally override parameters using kwargs
     sample_freq = kwargs.get('sample_freq', sample_freq)
     cutoff_freq = kwargs.get('cutoff_freq', cutoff_freq)
+    order = kwargs.get('order', order)
 
     b, a = butter(order, cutoff_freq/(sample_freq/2), 'lowpass') 
 
-    return filtfilt(b,a,signal)
+    if signal.ndim == 1:
+        # If the signal is 1D, treat it as a single trace
+        filtered_signal = filtfilt(b, a, signal)
+    elif signal.ndim == 2:
+        # If the signal is 2D, process each trace (row) independently
+        # Initialize the output array
+        filtered_signal = np.zeros_like(signal)
+        for i in range(signal.shape[0]):
+            filtered_signal[i, :] = filtfilt(b, a, signal[i, :])
+    else:
+        raise ValueError("Signal array must be 1D or 2D.")
+    
+    return filtered_signal
 
 
 def subtractLinFit(t, signal: np.ndarray, offset: bool = True, **kwargs) -> np.ndarray:
@@ -69,28 +89,61 @@ def subtractLinFit(t, signal: np.ndarray, offset: bool = True, **kwargs) -> np.n
 
     Args:
         t (list or array): time vector (in seconds).
-        signal (numpy array): signal array.
+        signal (numpy array): 1D or 2D signal array of shape [frame] or [traceNumber, frame].
         offset (bool, optional): whether to add baseline fluorescence (f0) back to the corrected signal as the offset.
                                 Defaults to 'True'.
     
     Returns:
-        filtered_signal (numpy array): signal array after removal of linear fit
+        corrected_signal (numpy array): signal array after removal of linear fit (same shape as input signal).
+        slope (numpy array): array of slopes for each trace (1D or scalar for 1D input).
+        intercept (numpy array): array of intercepts for each trace (1D or scalar for 1D input).
     """
+
     # Optionally override parameters using kwargs
     offset = kwargs.get('offset',offset)
     
-    X = np.vstack([t, np.ones(len(t))]).T
-    slope,intercept = np.linalg.lstsq(X,signal, rcond=None)[0]
+    # Ensure t is a numpy array
+    t = np.asarray(t)
 
-    if offset:
-        # baseline fluorescence is added to bring corrected y-values back to approximately the same level of uncorrected ones
-        # required if dFF is calculated using the corrected signal after linear fit
-        f0 = getBaseResp(signal, t, **kwargs)[0]
-        return signal-(t*slope+intercept)+f0, slope, intercept
+    # Prepare the design matrix for linear regression
+    X = np.vstack([t, np.ones(len(t))]).T
+
+    if signal.ndim == 1:
+        # If the signal is 1D, treat it as a single trace
+        slope, intercept = np.linalg.lstsq(X, signal, rcond=None)[0]
+        
+        if offset:
+            # baseline fluorescence is added to bring corrected y-values back to approximately the same level of uncorrected ones
+            # required if dFF is calculated using the corrected signal after linear fit subtraction
+            f0 = getBaseResp(signal, t, **kwargs)[0]
+            corrected_signal = signal - (t*slope + intercept) + f0
+        else:
+            # output (signal - linear fit) directly
+            # used to display how linear fit works
+            corrected_signal = signal - (t*slope + intercept)
+    
+    elif signal.ndim == 2:
+        # If the signal is 2D, process each trace (row) independently
+        # Initialize the output array
+        corrected_signal = np.zeros_like(signal)
+        slope = np.zeros(signal.shape[0])
+        intercept = np.zeros(signal.shape[0])
+        
+        for i in range(signal.shape[0]):
+            slope_trace, intercept_trace = np.linalg.lstsq(X, signal[i], rcond=None)[0]
+            slope[i] = slope_trace
+            intercept[i] = intercept_trace
+            
+            if offset:
+                f0 = getBaseResp(signal[i], t, **kwargs)[0]
+                corrected_signal[i] = signal[i] - (t*slope_trace + intercept_trace) + f0
+            else:
+                corrected_signal[i] = signal[i] - (t*slope_trace + intercept_trace)
+    
     else:
-        # output (signal - linear fit) directly
-        # used to display how linear fit works
-        return signal-(t*slope+intercept), slope, intercept
+        raise ValueError("Signal array must be 1D or 2D.")
+    
+    return corrected_signal, slope, intercept
 
 
 def getBaseResp(signal: np.ndarray, t: np.ndarray, 
@@ -186,11 +239,165 @@ def dFFcalc(signal, **kwargs):
     return dFF,dF,f0
      
 
+def is_valid_resp(imgSeries: np.ndarray, subLinFit: bool = True, dFResp: bool = False, 
+                  t_base: tuple[float,float] = (2,3), t_resp_excl: tuple[float,float] = (3.3,4), **kwargs) -> bool:
+    """
+    Checks whether the response is a negative outlier.
+    Negative outliers refer to traces whose Avg response is 3 SDs below Avg baseline or peak response is below 0.
+
+    Args:
+        imgSeries (array): array of shape (Y, X, frame)
+        subLinFit (bool): whether to subtract fitted line
+        dFResp (bool): if true, calculate dF response rather than dFF
+        t_base (tuple): time window (in seconds) for baseline
+        t_resp_excl (tuple): time window (in seconds) to exclude outliers (negative response)
+        **kwargs: Optional arguments that will override default
+            example: ROImask (np.ndarray): 2D binary mask array specifying the region of interest
+
+    Returns:
+        is_valid (bool): `True` for positive response (non-outlier), `False` for negative response (outlier)
+
+    Notes:
+        - Usually `t_resp_excl` time window should be no longer than response window to avoid removing any non-outlier traces.
+    """
+    
+    # optionally override parameters using kwargs
+    subLinFit = kwargs.get('subLinFit',subLinFit)
+    dFResp = kwargs.get('dFResp',dFResp)
+    t_base = kwargs.get('t_base',t_base)
+    t_resp_excl = kwargs.get('t_resp_excl',t_resp_excl)
+
+    # get time vector
+    t = getTimeVec(imgSeries.shape[-1], **kwargs)
+
+    # calculate response within ROI if provided
+    ROImask = kwargs.get('ROImask', np.ones(imgSeries.shape[:2]))
+    signal = imgSeries[ROImask==1, :].mean(axis=0)
+    
+    # whether to subtract fitted line
+    if subLinFit:
+        signal = subtractLinFit(t, signal, **kwargs)[0]
+    else:
+        # photo-bleaching may cause unnecessary exclusion
+        warnings.warn("Linear fit subtraction is suggested before excluding outliers.")
+
+    # baseline (f0) to be subtracted
+    f0 = getBaseResp(signal, t, t_base=t_base, **kwargs)[0]
+    
+    # calculate dFF or dF response
+    resp = (signal - f0) if dFResp else (signal - f0) / f0
+
+    # get time windows for baseline and response
+    base_indices = np.where((t >= t_base[0]) & (t <= t_base[1]))[0]
+    resp_indices = np.where((t >= t_resp_excl[0]) & (t <= t_resp_excl[1]))[0]
+    
+    # equivalent to comparing by raw F (`signal`), as baseline F (f0) is consistently positive
+    avgResp = resp[resp_indices].mean()
+    maxResp = resp[resp_indices].max()
+    meanBase = resp[base_indices].mean()
+    baseSD = resp[base_indices].std()
+
+    # traces whose Avg response is 3 SDs below Avg baseline are extreme outliers even if no sound is played
+    # if maxResp < meanBase, peak dFF response is negative -> makes no sense
+    is_valid = (avgResp >= meanBase - 3*baseSD) and (maxResp >= meanBase)
+
+    return is_valid
+
+
+def is_significant_resp(imgSeries: np.ndarray, subLinFit: bool = True, dFResp: bool = False, 
+                        t_base: tuple[float,float] = (2,3), t_resp: tuple[float,float] = (3.3,4), 
+                        butterFilt: bool = True, bidirect: bool = True, thres_2SD: bool = False, **kwargs) -> bool:
+    """
+    Checks whether the response is significant.
+    Insigificant response refers to traces whose max response (and min response) is within 3 SDs (2 SDs) range of Avg baseline.
+
+    Args:
+        imgSeries (array): array of shape (Y, X, frame)
+        subLinFit (bool): whether to subtract fitted line
+        dFResp (bool): if true, calculate dF response rather than dFF
+        t_base (tuple): time window (in seconds) for baseline
+        t_resp (tuple): time window (in seconds) for response
+        butterFilt (bool): whether to apply low pass filter
+        bidirect (bool): whether to check response significance in both directions
+                         if false, assume positive response and test by the positive threshold only
+        thres_2SD (bool): if true, thresholds are set 2 SDs from Avg baseline rather than 3 SDs
+        **kwargs: Optional arguments that will override default
+            example: ROImask (np.ndarray): 2D binary mask array specifying the region of interest
+                     cutoff_freq (float): low-pass filter cutoff frequency
+
+    Returns:
+        is_significant (bool): `True` for significant response, `False` for insignificant response
+    """
+    
+    # optionally override parameters using kwargs
+    subLinFit = kwargs.get('subLinFit',subLinFit)
+    dFResp = kwargs.get('dFResp',dFResp)
+    t_base = kwargs.get('t_base',t_base)
+    t_resp = kwargs.get('t_resp',t_resp)
+    butterFilt = kwargs.get('butterFilt',butterFilt)
+    bidirect = kwargs.get('bidirect',bidirect)
+    thres_2SD = kwargs.get('thres_2SD',thres_2SD)
+
+    # get time vector
+    t = getTimeVec(imgSeries.shape[-1], **kwargs)
+
+    # calculate response within ROI if provided
+    ROImask = kwargs.get('ROImask', np.ones(imgSeries.shape[:2]))
+    signal = imgSeries[ROImask==1, :].mean(axis=0)
+
+    # whether to subtract fitted line
+    if subLinFit:
+        signal = subtractLinFit(t, signal, **kwargs)[0]
+    else:
+        # photo-bleaching may cause bias
+        warnings.warn("Linear fit subtraction is suggested before testing insignificant responses.")
+
+    # whether to apply low pass filter
+    if butterFilt:
+        # Default cutoff_freq = 2
+        # cutoff_freq = kwargs.get('cutoff_freq', 2)
+        # signal = butterFilter(signal, cutoff_freq=cutoff_freq)
+        signal = butterFilter(signal, **kwargs)
+
+    # baseline (f0) to be subtracted
+    f0 = getBaseResp(signal, t, t_base=t_base, t_resp=t_resp, **kwargs)[0]
+    
+    # calculate dFF or dF response
+    resp = (signal - f0) if dFResp else (signal - f0) / f0
+
+    # get time windows for baseline and response
+    base_indices = (t >= t_base[0]) & (t <= t_base[1])
+    resp_indices = (t >= t_resp[0]) & (t <= t_resp[1])
+
+    # equivalent to comparing by raw F (`signal`) as baseline F (f0) is consistently positive
+    maxResp = resp[resp_indices].max()
+    minResp = resp[resp_indices].min()
+    meanBase = resp[base_indices].mean()
+    baseSD = resp[base_indices].std()
+
+    # set threshold
+    thres = 2*baseSD if thres_2SD else 3*baseSD
+
+    # compare max response to upper threshold (Avg+3SD) and min dFF response to lower threshold (Avg-3SD)
+    if bidirect:
+        # test significance in both directions
+        is_significant = (maxResp > meanBase + thres) or (minResp < meanBase - thres)
+    else:
+        # only consider positive response
+        is_significant = maxResp > meanBase + thres
+
+    return is_significant
+
+
 def pkDFFimg(imgSeries: np.ndarray,
                 subLinFit: bool = True, 
-                butterFilt: bool = False, 
+                butterFilt: bool = True, 
                 dFResp: bool = False, 
-                **kwargs):
+                negExcl: bool = True, 
+                insigExcl: bool = False, 
+                sponCorrect: bool = False, 
+                t_base: tuple[float,float] = (2,3), 
+                **kwargs) -> float | None:
     """
     Calculates peak dFF response from image series array.
     
@@ -199,43 +406,69 @@ def pkDFFimg(imgSeries: np.ndarray,
         subLinFit (bool): whether to subtract fitted line
         butterFilt (bool): whether to apply low pass filter
         dFResp (bool): if true, calculate dF response rather than dFF
-        **kwargs: Optional arguments that will override default.
+        negExcl (bool): if true, exclude outliers whose Avg responses (within response time window) are 3 SDs below Avg baseline, 
+                        or whose max responses are below Avg baseline
+        insigExcl (bool): if true, convert insignificant traces whose max and min responses are within ±3 SDs of Avg baseline to 0
+        sponCorrect (bool): Used to correct for spontaneous activities or noise
+                            if true, substract max spontaneous response (within baseline time window) from peak dFF response (within response time window)
+        t_base (tuple): time window (in seconds) for baseline
+        **kwargs: Optional arguments that will override default
             example: ROImask (np.ndarray): 2D binary mask array specifying the region of interest
-                     negResp (bool): whether to extract peak dFF response in either direction (original signal preserved) as 'pkResp'
+                     cutoff_freq (float): low-pass filter cutoff frequency
 
     Returns:
-        pk (float): peak dFF or dF response
+        pk (float or `None`): peak dFF or dF response
     """
     
-    t = getTimeVec(imgSeries.shape[-1],**kwargs)
+    # add explicit arguments to kwargs
+    kwargs['subLinFit'] = subLinFit
+    kwargs['butterFilt'] = butterFilt
+    kwargs['dFResp'] = dFResp
+    kwargs['t_base'] = t_base
 
-    ROImask = kwargs.get('ROImask',np.ones(imgSeries.shape[:2]))
-    signal = imgSeries[ROImask==1,:].mean(axis=0)
+    # check for negative response
+    # if `negExcl` is true, return `None`
+    if negExcl and not is_valid_resp(imgSeries, **kwargs):
+        return None
+
+    # check for insignificant response
+    # if `insigExcl` is true, return `0`
+    if insigExcl and not is_significant_resp(imgSeries, **kwargs):
+        return 0
+
+    t = getTimeVec(imgSeries.shape[-1], **kwargs)
+    ROImask = kwargs.get('ROImask', np.ones(imgSeries.shape[:2]))
+    signal = imgSeries[ROImask==1, :].mean(axis=0)
     
     # whether to subtract fitted line
     if subLinFit:
         signal = subtractLinFit(t, signal, **kwargs)[0]
-
+    
     # whether to apply low pass filter
     if butterFilt:
-        # cutoff_freq = kwargs.get('cutoff_freq', 4)  # Default cutoff_freq = 4
+        # Default cutoff_freq = 2
+        # cutoff_freq = kwargs.get('cutoff_freq', 2)
         # signal = butterFilter(signal, cutoff_freq=cutoff_freq)
         signal = butterFilter(signal, **kwargs)
-    
+
     # baseline (f0) to be subtracted
     f0 = getBaseResp(signal, t, **kwargs)[0]
     
     # calculate dFF or dF response
-    if dFResp:
-        resp = signal-f0
-    else:
-        resp = (signal-f0)/f0
+    resp = (signal - f0) if dFResp else (signal - f0) / f0
 
     # get baseline and peak from dFF or dF
-    pkBase, pkResp = getBaseResp(resp, t, **kwargs)
-
+    pkBase_output, pkResp_output = getBaseResp(resp, t, **kwargs)
+    
     # calculate peak dFF reponse
-    pk = pkResp-pkBase
+    pk = pkResp_output - pkBase_output
+    
+    # correct for spontaneous activities or noise if `sponCorrect` is true
+    if sponCorrect:
+        # substract the max amplitude within baseline time window from the peak dFF response
+        base_indices = np.where((t >= t_base[0]) & (t <= t_base[1]))[0]
+        maxSpon = resp[base_indices].max() - pkBase_output
+        pk -= maxSpon
 
     return pk
 
@@ -270,3 +503,169 @@ def meanPlusMinusSem(traceXtimeArray: np.ndarray) -> Tuple[np.ndarray, np.ndarra
     sem = std / np.sqrt(traceXtimeArray.shape[0])
 
     return u, u + sem, u - sem
+
+
+def updateTable_signal(df: pd.DataFrame, qcam2img: dict, mask_name: str = 'response_mask', 
+                       t_base: tuple = (2.0, 3.0), t_resp: tuple = (3.3, 4.0), cutoff_freq: float = 2, **kwargs):
+    """
+    Update metadata dataframe with raw and processed signals within ROI.
+
+    Args:
+        df (pd.DataFrame): Metadata dataframe including columns: 'qcam', 'dir', and 'treatment'.
+        qcam2img (dict): Dictionary mapping each qcam file path to its corresponding image data.
+        mask_name (str, optional): Filename (case-sensitive) of the binary mask to search for. Defaults to 'response_mask'.
+        t_base (tuple, optional): Baseline time window. Defaults to (2.0, 3.0).
+        t_resp (tuple, optional): Response time window. Defaults to (3.3, 4.0).
+        cutoff_freq (float, optional): Low-pass filter cutoff frequency. Defaults to 2.
+        **kwargs: Optional arguments that will override default.
+            example: stimStart (float, optional): Stimulus start time (in seconds) by default. Defaults to 3.
+
+    Returns:
+        df_updated (pd.DataFrame): Updated metadata dataframe including new columns:
+                                   'ROImask', 'time', 'baseWindow', 'respWindow', 
+                                   'F_ROI_raw', 'F_ROI_linFilt_butterFilt', 
+                                   'f0_ROI_raw', 'f0_ROI_linFilt_butterFilt', 
+                                   'dF_ROI_raw', 'dF_ROI_raw_peak', 
+                                   'dF_ROI_linFilt_butterFilt', 'dF_ROI_linFilt_butterFilt_peak', 
+                                   'dFF_ROI_raw', 'dFF_ROI_raw_peak', 
+                                   'dFF_ROI_linFilt_butterFilt', 'dFF_ROI_linFilt_butterFilt_peak', 
+                                   'valid'.
+    
+    Notes:
+        - The function grabs 'response_mask.joblib' file in the experiment folder ('dir') as ROI masks.
+        - The function grabs 'STIMULUS_START_*_sec*' file in the experiment folder ('dir') 
+          to adjust baseline and response time windows based on when stimuli start.
+        - ROI mask selection priority:
+          1. Files containing both '{mask_name}' (case-sensitive) and treatment-specific 'pre'/'post' (case-insensitive).
+             - Assume that treatments use different ROIs (due to animal/platform movements when inserting the pipette tip).
+          2. Files containing only '{mask_name}' (case-sensitive).
+             - Use the same ROI for all treatments.
+    """
+    
+    # Check whether required columns exist
+    required_col = ['qcam', 'dir', 'treatment']
+    if not all(col in df.columns for col in required_col):
+        raise ValueError(f"DataFrame must contain the following columns: {required_col}")
+    
+    df_updated = df.copy()
+    
+    # Add binary mask of ROI by searching for 'joblib' file in the same directory
+    masks = []
+    for dir, treatment in zip(df_updated['dir'], df_updated['treatment']):
+        # Determine whether to search for 'pre' or 'post' in filenames (case-insensitive)
+        treatment_key = 'post' if 'post' in treatment.lower() else 'pre'
+        
+        # Find all joblib files in the directory
+        all_masks = glob(os.path.join(dir, '*.joblib'))
+        
+        # Find treatment-specific filenames which contain both '{mask_name}' and '{treatment_key}'
+        treatment_masks = [
+            f for f in all_masks 
+            if (mask_name in os.path.basename(f) 
+            and treatment_key in os.path.basename(f).lower())
+        ]
+        
+        if len(treatment_masks) > 1:
+            raise ValueError(f"Multiple {treatment_key} masks found in {dir}: {treatment_masks}")
+        elif len(treatment_masks) == 1:
+            # Choose files with treatment-specific names first
+            masks.append(joblib.load(treatment_masks[0]))
+        else:
+            # Fallback to general filenames (only needs '{mask_name}') if treatment-specific filenames are not found
+            general_masks = [f for f in all_masks if mask_name in os.path.basename(f)]
+            if not general_masks:
+                raise FileNotFoundError(f"No suitable ROI mask found in {dir}. Need file containing '{mask_name}'.")
+            # Sort all files and select the first one
+            masks.append(joblib.load(sorted(general_masks)[0]))
+
+    df_updated['ROImask'] = masks
+
+    # Add time vector
+    df_updated['time'] = df_updated['qcam'].apply(lambda x: getTimeVec(qcam2img[x].shape[-1], **kwargs))
+
+    # Check whether all traces are of the same frame counts
+    if df_updated['time'].apply(lambda x: x.shape[0]).nunique() > 1:
+        warnings.warn("Traces have more than one frame count. Ensure time windows are adjusted.")
+
+    # Add baseline and response time windows
+    # Adjust windows automatically according to 'STIMULUS_START_*_sec*' files
+    df_updated['baseWindow'] = metadataProcess.getBaseRespWindow(df_updated, t_base=t_base, t_resp=t_resp, **kwargs)['baseWindow']
+    df_updated['respWindow'] = metadataProcess.getBaseRespWindow(df_updated, t_base=t_base, t_resp=t_resp, **kwargs)['respWindow']
+
+    # Add fluorescence trace (F) within ROI
+    # Raw data
+    df_updated['F_ROI_raw'] = df_updated.apply(lambda x: qcam2img[x['qcam']][x['ROImask']==1, :].mean(axis=0), axis=1)
+    # Processed data (subtracted linear fit and added low-pass filter)
+    df_updated['F_ROI_linFilt_butterFilt'] = df_updated.apply(
+        lambda x: butterFilter(
+            subtractLinFit(x['time'], x['F_ROI_raw'], t_base=x['baseWindow'], **kwargs)[0], cutoff_freq=cutoff_freq, **kwargs
+        ), 
+        axis=1
+    )
+
+    # Add baseline fluorescence (f0) within ROI
+    # Raw data
+    df_updated['f0_ROI_raw'] = df_updated.apply(
+        lambda x: getBaseResp(x['F_ROI_raw'], x['time'], t_base=x['baseWindow'], **kwargs)[0], axis=1
+    )
+    # Processed data (subtracted linear fit and added low-pass filter)
+    df_updated['f0_ROI_linFilt_butterFilt'] = df_updated.apply(
+        lambda x: getBaseResp(x['F_ROI_linFilt_butterFilt'], x['time'], t_base=x['baseWindow'], **kwargs)[0], axis=1
+    )
+
+    # Add dF response within ROI
+    # Raw data
+    df_updated['dF_ROI_raw'] = df_updated.apply(lambda x: x['F_ROI_raw'] - x['f0_ROI_raw'], axis=1)
+    df_updated['dF_ROI_raw_peak'] = df_updated.apply(
+        lambda x: pkDFFimg(
+            qcam2img[x['qcam']], subLinFit=False, ROImask=x['ROImask'], butterFilt=False, 
+            dFResp=True, negExcl=False, t_base=x['baseWindow'], t_resp=x['respWindow'], **kwargs
+        ), 
+        axis=1
+    )
+    # Processed data (subtracted linear fit and added low-pass filter)
+    df_updated['dF_ROI_linFilt_butterFilt'] = df_updated.apply(
+        lambda x: x['F_ROI_linFilt_butterFilt'] - x['f0_ROI_linFilt_butterFilt'], axis=1
+    )
+    df_updated['dF_ROI_linFilt_butterFilt_peak'] = df_updated.apply(
+        lambda x: pkDFFimg(
+            qcam2img[x['qcam']], ROImask=x['ROImask'], cutoff_freq=cutoff_freq, 
+            dFResp=True, negExcl=False, t_base=x['baseWindow'], t_resp=x['respWindow'], **kwargs
+        ), 
+        axis=1
+    )
+
+    # Add dFF response within ROI
+    # Raw data
+    df_updated['dFF_ROI_raw'] = df_updated.apply(lambda x: x['dF_ROI_raw'] / x['f0_ROI_raw'], axis=1)
+    df_updated['dFF_ROI_raw_peak'] = df_updated.apply(
+        lambda x: pkDFFimg(
+            qcam2img[x['qcam']], subLinFit=False, ROImask=x['ROImask'], butterFilt=False, 
+            negExcl=False, t_base=x['baseWindow'], t_resp=x['respWindow'], **kwargs
+        ), 
+        axis=1
+    )
+    # Processed data (subtracted linear fit and added low-pass filter)
+    df_updated['dFF_ROI_linFilt_butterFilt'] = df_updated.apply(
+        lambda x: x['dF_ROI_linFilt_butterFilt'] / x['f0_ROI_linFilt_butterFilt'], axis=1
+    )
+    df_updated['dFF_ROI_linFilt_butterFilt_peak'] = df_updated.apply(
+        lambda x: pkDFFimg(
+            qcam2img[x['qcam']], ROImask=x['ROImask'], cutoff_freq=cutoff_freq, 
+            negExcl=False, t_base=x['baseWindow'], t_resp=x['respWindow'], **kwargs
+        ), 
+        axis=1
+    )
+
+    # Identify whether each trace is an outlier with negative response (`False`)
+    # Test sign of peak dFF response only, as the result is the same for peak dF response
+    # Time window for exclusive thresholds is suggested overlapping with response time window
+    df_updated['valid'] = df_updated.apply(
+        lambda x: is_valid_resp(
+            qcam2img[x['qcam']], ROImask=x['ROImask'], t_base=x['baseWindow'], 
+            t_resp=x['respWindow'], t_resp_excl=x['respWindow'], **kwargs
+        ), 
+        axis=1
+    )
+
+    return df_updated
