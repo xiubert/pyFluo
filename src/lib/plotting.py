@@ -84,8 +84,84 @@ def experimentAvgPlot(dPath: str = None, qFiles: list = None,
     fig.show()
 
 
-def plot_individualTrace(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF_ROI_raw', 
-                         sepPlot: bool = False, stimStart: float = 3.0, alpha_ind: float = 0.3, **kwargs):
+def plot_respHeatmap(df: pd.DataFrame, dB_plot: int = 80, same_scale: bool = True, 
+                     ROIcontour: np.ndarray | dict[str, np.ndarray] | None = None, **kwargs):
+    """
+    Plot baseline gray-scaled wide-field images and response heatmaps for each treatment.
+    Optionally add ROI mask contours to images for visualization.
+
+    Args:
+        df (pd.DataFrame): Metadata dataframe including columns: 'qcam', 'dB', and 'treatment'.
+        dB_plot (int, optional): Sound intensity (in dB) to plot response heatmaps. Defaults to 80.
+                                 If None, plot average across all intensities.
+        ROIcontour (dict, optional): ROI's vertex coordinates, including a repeated first vertex to close the shape.
+                                     Either: - 2D numpy array (same ROI for all treatments).
+                                             - Dictionary mapping treatments to 2D arrays (different ROIs for each treatment).
+                                             - None (no contours shown).
+        same_scale (bool, optional): If 'True', use same color scaling in all heatmaps.
+        **kwargs: Optional arguments that will override default.
+            examples: t_baseline (tuple): start and end time points (inclusive) of baseline to plot wide-field images.
+                      t_temporalAvg (tuple): start and end time points (inclusive) of response to plot response heatmaps.
+    """
+    # Check whether required columns exist
+    required_cols = ['qcam', 'dB', 'treatment']
+    if not all(col in df.columns for col in required_cols):
+        raise ValueError(f"Dataframe must contain the following columns: {required_cols}")
+
+    # Validate argument 'ROIcontour'
+    if ROIcontour is not None:
+        if not isinstance(ROIcontour, (np.ndarray, dict)):
+            raise ValueError("'ROIcontour' must be a numpy array or dictionary.")
+        if isinstance(ROIcontour, dict):
+            missing = set(df['treatment'].unique()) - set(ROIcontour.keys())
+            if missing:
+                raise ValueError(f"Dataframe contains treatments not in 'ROIcontour': {missing}")
+
+    # Initialize figure
+    treatments = df['treatment'].unique()
+    nTreat = len(treatments)
+    fig, ax = plt.subplots(nTreat, 2, figsize=(10, 3*nTreat))
+
+    if same_scale:
+        # Get global min and max dFF for consistent color scaling in heatmaps
+        all_spatialDFF = []
+        for treatment, df_group in df.groupby('treatment', sort=False):
+            qcams = (df_group['qcam'].tolist() if dB_plot is None 
+                    else df_group[df_group['dB'] == dB_plot]['qcam'].tolist())
+            _, _, _, spatialDFF = imgProcess.qcams2roiTrace(qcams, **kwargs)
+            all_spatialDFF.append(spatialDFF)
+        dFF_min, dFF_max = min(dFF.min() for dFF in all_spatialDFF), max(dFF.max() for dFF in all_spatialDFF)
+
+    # Plot baseline gray-scaled wide-field images and response heatmaps for each treatment
+    for i, treatment in enumerate(treatments):
+        qcams = (df[df['treatment'] == treatment]['qcam'].tolist() if dB_plot is None 
+                else df[(df['treatment'] == treatment) & (df['dB'] == dB_plot)]['qcam'].tolist())
+
+        # Calculate spatial dFF for response heatmap
+        _, _, imgs, spatialDFF = imgProcess.qcams2roiTrace(qcams, **kwargs)
+
+        # Plot images with labels/titles and colorbars
+        ax[i,0].imshow(imgs.mean(axis=(0,-1)), 'gray')
+        vmin, vmax = (dFF_min, dFF_max) if same_scale else (None, None)
+        respHeat = ax[i,1].imshow(spatialDFF, cmap='jet', vmin=vmin, vmax=vmax)
+        ax[i,0].set_ylabel(treatment, rotation=0, ha='right', va='center', fontsize=14)
+        if i == 0:
+            ax[i,0].set_title("Wide-field", fontsize=14)
+            ax[i,1].set_title("Response heatmap", fontsize=14)
+        plt.colorbar(respHeat, ax=ax[i,1])
+    
+        # Add contours if provided
+        if ROIcontour is not None:
+            contour = ROIcontour if isinstance(ROIcontour, np.ndarray) else ROIcontour[treatment]
+            for j in range(2):
+                ax[i,j].plot(contour[:,0], contour[:,1], 'w-', linewidth=2)
+    
+    plt.tight_layout()
+    plt.show()
+
+
+def plot_traces(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF_ROI_raw', 
+                sepPlot: bool = False, stimStart: float = 3.0, alpha_ind: float = 0.3, **kwargs):
     """
     Plot individual and averaged traces for a given sound intensity across different treatments.
 
@@ -469,7 +545,8 @@ def plotTrace_reAnimal(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF
         title=f"Averaged traces across animals at dB={dB_plot}",
         xaxis_title="Time (s)",
         yaxis_title=resp_col,
-        height=450 * len(treatments) if sepPlot else 500
+        height=450 * len(treatments) if sepPlot else 500, 
+        legend=dict(y=0.5)
     )
     
     if sepPlot:
@@ -481,7 +558,7 @@ def plotTrace_reAnimal(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF
     fig.show()
 
 
-def plot_avgDFF_acrossAnimal(df: pd.DataFrame, resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak', 
+def plot_avgDFF_acrossAnimal(df: pd.DataFrame, measure_col: str = 'dB', resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak', 
                              avgAnimal: bool = True, normalize: str = None, SEMbar: bool = True, 
                              lineplot: bool = True, **kwargs) -> pd.DataFrame:
     """
@@ -490,6 +567,8 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame, resp_col: str = 'dFF_ROI_linFilt_
 
     Args:
         df (pd.DataFrame): Metadata dataframe including columns: 'dir', 'treatment', 'dB', and column for the response variable.
+        measure_col (str, optional): Column name for the independent variable. Can be sound intensity or frequency.
+                                     Defaults to 'dB' (sound intensity).
         resp_col (str, optional): Column name for the response variable. Defaults to 'dFF_ROI_linFilt_butterFilt_peak'.
         avgAnimal (bool, optional): Whether to average peak response across animals or individual trials.
                                     - 'True': Average in two steps:
@@ -519,7 +598,7 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame, resp_col: str = 'dFF_ROI_linFilt_
     """
 
     # Check whether required columns exist
-    required_col = ['dir', 'treatment', 'dB', resp_col]
+    required_col = ['dir', 'treatment', measure_col, resp_col]
     if not all(col in df.columns for col in required_col):
         raise ValueError(f"DataFrame must contain the following columns: {required_col}")
     
@@ -528,18 +607,18 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame, resp_col: str = 'dFF_ROI_linFilt_
         warnings.warn("Normalization by group cannot be applied when 'avgAnimal' is False.")
     
     # Group by 'dir' and 'treatment' and extract unique 'dB' values
-    dB_lists = list(df.groupby(['dir', 'treatment'], sort=False)['dB'].unique())
+    dB_lists = list(df.groupby(['dir', 'treatment'], sort=False)[measure_col].unique())
 
     # Find the common 'dB' levels across all animals
     common_dB = set(dB_lists[0])    # Start with the first list
     for item in dB_lists[1:]:    # Iterate over the remaining lists
         common_dB.intersection_update(item)
     if not common_dB:
-        raise ValueError("No common 'dB' values found across all animals and treatments.")
+        raise ValueError(f"No common '{measure_col}' values found across all animals and treatments.")
     common_dB = sorted(common_dB)   # Sort 'dB' values in ascending order
 
     # Filter rows where 'dB' is in the common_dB list
-    df_filtered = df[df['dB'].isin(common_dB)].reset_index(drop=True)
+    df_filtered = df[df[measure_col].isin(common_dB)].reset_index(drop=True)
 
     if normalize == 'byTrial':
         # Normalize each trial's response to the max response within the same animal
@@ -548,14 +627,14 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame, resp_col: str = 'dFF_ROI_linFilt_
 
     if avgAnimal:
         # Calculate the mean within each dir for each treatment/dB combination
-        df_grouped = df_filtered.groupby(['dir', 'treatment', 'dB'], as_index=False, sort=False)[resp_col].mean().reset_index(drop=True)
+        df_grouped = df_filtered.groupby(['dir', 'treatment', measure_col], as_index=False, sort=False)[resp_col].mean().reset_index(drop=True)
         if normalize == 'byGroup':
             # Normalize mean response of each treatment/dB combination group to the max mean response within the same animal
             df_grouped[resp_col] = df_grouped.groupby(['dir'], sort=False)[resp_col].transform(lambda x: (x / x.max()) * 100)
             print('Normalized on the treatment/dB combination group basis.')
     else:
         # Maintain the unaveraged original data of each individual trial
-        df_grouped = df_filtered.loc[:, ['treatment', 'dB', resp_col]]
+        df_grouped = df_filtered.loc[:, ['treatment', measure_col, resp_col]]
 
     # Calculate the mean, standard deviation (SD), and standard error (SEM) across dirs for each treatment/dB combination
     agg_dict = {
@@ -563,7 +642,7 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame, resp_col: str = 'dFF_ROI_linFilt_
         f'mean_{resp_col}': (resp_col, 'mean'), 
         f'std_{resp_col}': (resp_col, 'std')
     }
-    df_avg = df_grouped.groupby(['treatment', 'dB'], as_index=False, sort=False).agg(**agg_dict)
+    df_avg = df_grouped.groupby(['treatment', measure_col], as_index=False, sort=False).agg(**agg_dict)
     df_avg[f'sem_{resp_col}'] = df_avg[f'std_{resp_col}'] / np.sqrt(df_avg[f'count_{resp_col}'])
 
     # Fill NaN standard deviations or errors with 0 (if there's only one dir for a treatment/dB combination)
@@ -572,13 +651,13 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame, resp_col: str = 'dFF_ROI_linFilt_
 
     # Sort the DataFrame by 'dB' in ascending order while keeping the original order of 'treatment'
     # Otherwise, x-ticks cannot match 'dB' values in the correct order
-    df_avg = pd.concat([group.sort_values(by='dB') for _, group in df_avg.groupby('treatment', sort=False)]).reset_index(drop=True)
+    df_avg = pd.concat([group.sort_values(by=measure_col) for _, group in df_avg.groupby('treatment', sort=False)]).reset_index(drop=True)
 
     if lineplot:
         # Plot lineplot
         plt.figure(figsize=(8,6))
         for treatment, group in df_avg.groupby('treatment', sort=False):
-            plt.errorbar(group['dB'], group[f'mean_{resp_col}'], 
+            plt.errorbar(group[measure_col], group[f'mean_{resp_col}'], 
                          yerr=group[f'sem_{resp_col}'] if SEMbar else group[f'std_{resp_col}'], 
                          label=treatment, marker='o', **kwargs)
         plt.xlabel("Sound Intensity (dB)")
@@ -592,14 +671,14 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame, resp_col: str = 'dFF_ROI_linFilt_
         g = sns.FacetGrid(df_avg, col='treatment', sharey=True, height=4)
 
         # Define the function to plot bars with error bars
-        def plot_bars_with_error(data, **kwargs):
-            x = np.arange(len(data['dB']))
+        def plot_bars_with_error(data, measure_col, **kwargs):
+            x = np.arange(len(data[measure_col]))
             yerr = data[f'sem_{resp_col}'] if SEMbar else data[f'std_{resp_col}']
             plt.bar(x, data[f'mean_{resp_col}'], yerr=yerr, **kwargs)
-            plt.xticks(x, data['dB'])
+            plt.xticks(x, data[measure_col])
 
         # Map the plotting function to the FacetGrid
-        g.map_dataframe(plot_bars_with_error, **kwargs)
+        g.map_dataframe(plot_bars_with_error, measure_col=measure_col, **kwargs)
 
         # Add labels and titles
         g.set_axis_labels("Sound Intensity (dB)", f"{resp_col} Response" if normalize is None else f"{resp_col} Response (%)")

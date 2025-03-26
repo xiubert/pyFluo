@@ -5,6 +5,7 @@ from typing import Tuple
 import os
 import warnings
 import joblib
+from glob import glob
 
 import lib.signalProcess as signalProcess
 import lib.metadataProcess as metadataProcess
@@ -505,15 +506,15 @@ def meanPlusMinusSem(traceXtimeArray: np.ndarray) -> Tuple[np.ndarray, np.ndarra
     return u, u + sem, u - sem
 
 
-def updateTable_signal(df: pd.DataFrame, qcam2img: dict, mask_name: str = 'response_mask.joblib', 
+def updateTable_signal(df: pd.DataFrame, qcam2img: dict, mask_name: str = 'response_mask', 
                        t_base: tuple = (2.0, 3.0), t_resp: tuple = (3.3, 4.0), cutoff_freq: float = 2, **kwargs):
     """
     Update metadata dataframe with raw and processed signals within ROI.
 
     Args:
-        df (pd.DataFrame): Metadata dataframe including columns: 'qcam' and 'dir'.
+        df (pd.DataFrame): Metadata dataframe including columns: 'qcam', 'dir', and 'treatment'.
         qcam2img (dict): Dictionary mapping each qcam file path to its corresponding image data.
-        mask_name (str, optional): Filename of the binary mask to search for. Defaults to 'response_mask.joblib'.
+        mask_name (str, optional): Filename (case-sensitive) of the binary mask to search for. Defaults to 'response_mask'.
         t_base (tuple, optional): Baseline time window. Defaults to (2.0, 3.0).
         t_resp (tuple, optional): Response time window. Defaults to (3.3, 4.0).
         cutoff_freq (float, optional): Low-pass filter cutoff frequency. Defaults to 2.
@@ -535,10 +536,15 @@ def updateTable_signal(df: pd.DataFrame, qcam2img: dict, mask_name: str = 'respo
         - The function grabs 'response_mask.joblib' file in the experiment folder ('dir') as ROI masks.
         - The function grabs 'STIMULUS_START_*_sec*' file in the experiment folder ('dir') 
           to adjust baseline and response time windows based on when stimuli start.
+        - ROI mask selection priority:
+          1. Files containing both '{mask_name}' (case-sensitive) and treatment-specific 'pre'/'post' (case-insensitive).
+             - Assume that treatments use different ROIs (due to animal/platform movements when inserting the pipette tip).
+          2. Files containing only '{mask_name}' (case-sensitive).
+             - Use the same ROI for all treatments.
     """
     
     # Check whether required columns exist
-    required_col = ['qcam', 'dir']
+    required_col = ['qcam', 'dir', 'treatment']
     if not all(col in df.columns for col in required_col):
         raise ValueError(f"DataFrame must contain the following columns: {required_col}")
     
@@ -546,11 +552,33 @@ def updateTable_signal(df: pd.DataFrame, qcam2img: dict, mask_name: str = 'respo
     
     # Add binary mask of ROI by searching for 'joblib' file in the same directory
     masks = []
-    for dir in df_updated['dir']:
-        mask_path = os.path.join(dir, mask_name)
-        if not os.path.exists(mask_path):
-            raise FileNotFoundError(f"ROI Mask file '{mask_name}' not found in directory: {dir}")
-        masks.append(joblib.load(mask_path))
+    for dir, treatment in zip(df_updated['dir'], df_updated['treatment']):
+        # Determine whether to search for 'pre' or 'post' in filenames (case-insensitive)
+        treatment_key = 'post' if 'post' in treatment.lower() else 'pre'
+        
+        # Find all joblib files in the directory
+        all_masks = glob(os.path.join(dir, '*.joblib'))
+        
+        # Find treatment-specific filenames which contain both '{mask_name}' and '{treatment_key}'
+        treatment_masks = [
+            f for f in all_masks 
+            if (mask_name in os.path.basename(f) 
+            and treatment_key in os.path.basename(f).lower())
+        ]
+        
+        if len(treatment_masks) > 1:
+            raise ValueError(f"Multiple {treatment_key} masks found in {dir}: {treatment_masks}")
+        elif len(treatment_masks) == 1:
+            # Choose files with treatment-specific names first
+            masks.append(joblib.load(treatment_masks[0]))
+        else:
+            # Fallback to general filenames (only needs '{mask_name}') if treatment-specific filenames are not found
+            general_masks = [f for f in all_masks if mask_name in os.path.basename(f)]
+            if not general_masks:
+                raise FileNotFoundError(f"No suitable ROI mask found in {dir}. Need file containing '{mask_name}'.")
+            # Sort all files and select the first one
+            masks.append(joblib.load(sorted(general_masks)[0]))
+
     df_updated['ROImask'] = masks
 
     # Add time vector
