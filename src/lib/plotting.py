@@ -558,8 +558,13 @@ def plotTrace_reAnimal(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF
     fig.show()
 
 
-def barplot_avgDFF_singleDB(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak',
-                            avgAnimal: bool = True, normalize: str = None, SEMbar: bool = True) -> pd.DataFrame:
+def barplot_avgDFF_singleDB(df: pd.DataFrame, 
+                            dB_plot: int = 80, 
+                            resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak', 
+                            ctrl_treat: str = None, 
+                            avgAnimal: bool = True, 
+                            normalize: str = None, 
+                            SEMbar: bool = True) -> pd.DataFrame:
     """
     Plot barplots for averaged fluorescence peak response across animals (with individual animal data points) at specified sound intensity.
 
@@ -567,6 +572,8 @@ def barplot_avgDFF_singleDB(df: pd.DataFrame, dB_plot: int = 80, resp_col: str =
         df (pd.DataFrame): Metadata dataframe including columns: 'dir', 'dB', 'treatment', and column for the response variable.
         dB_plot (int, optional): Sound intensity (in dB) for traces to be plotted. Defaults to 80.
         resp_col (str, optional): Name of the column containing the response variable. Defaults to 'dFF_ROI_linFilt_butterFilt_peak'.
+        ctrl_treat (str, optional): Name of the control treatment in column 'treatment'. Normalize other treatments to it if normalization is performed.
+                                    - None: The first treatment that appears in the dataframe is assumed to be control treatment (CTRL).
         avgAnimal (bool, optional): Whether to average peak response across animals or individual trials.
                                     - 'True': Average in two steps:
                                               First average peak responses within each animal, then average the mean across animals.
@@ -575,11 +582,12 @@ def barplot_avgDFF_singleDB(df: pd.DataFrame, dB_plot: int = 80, resp_col: str =
                                                Average all individual trials from all animals.
                                                Error bars represent SEM or SD across trials.
                                     Defaults to 'True'.
-        normalize (str, optional): Whether to normalize peak response to the max response (in percentage). 
-                                   - 'byGroup': For each animal, calculate the mean for each treatment, then normalize these means to the max mean.
-                                                Only applicable when 'avgAnimal' is 'True'.
-                                   - 'byTrial': For each animal, normalize all individual trials to the trial with max response.
+        normalize (str, optional): Whether to normalize peak response to the CTRL (max) response (in percentage). 
                                    - None: No normalization is applied.
+                                   - 'byTrial': For each animal, normalize all individual trials to the trial with max response.
+                                   - 'byGroup': For each animal, calculate the mean for each treatment, then normalize these means to the mean of CTRL (max mean).
+                                                Only applicable when 'avgAnimal' is 'True'.
+                                   - 'trial2group': For each animal, calculate the mean of CTRL treatment (max mean), then normalize each single trial to this mean.
         SEMbar (bool, optional): If 'True', use standard error (SEM) for error bars. If 'False', use standard deviation (SD).
 
     Returns:
@@ -587,9 +595,12 @@ def barplot_avgDFF_singleDB(df: pd.DataFrame, dB_plot: int = 80, resp_col: str =
                                  Including columns: 'treatment', 'count', 'mean', 'std', and 'sem'.
     
     Notes:
+        - Data including only one treatment type may raise error.
+        - If normalize == 'byGroup' or 'trial2group', the first treatment that appears in the dataframe is assumed to be CTRL.
         - If 'avgAnimal' is 'False', animals may have different weights due to varying trial counts for each animal.
-        - If 'avgAnimal' is 'True' and normalize == 'byGroup', the treatment with max response may get a zero error bar.
-        - normalize='byGroup' is only applicable when 'avgAnimal' is 'True'.
+        - If 'avgAnimal' is 'True', normalize == 'byGroup' or normalize == 'trial2group' will create the same barplot.
+          The CTRL treatment can get a zero error bar.
+        - normalize == 'byGroup' is only applicable when 'avgAnimal' is 'True'.
     """
 
     # Check whether required columns exist
@@ -601,10 +612,10 @@ def barplot_avgDFF_singleDB(df: pd.DataFrame, dB_plot: int = 80, resp_col: str =
     if dB_plot not in df['dB'].unique():
         raise ValueError(f"{dB_plot} not found in the 'dB' column.")
     
-    # Raise warnings when possibly getting a 0 error bar for one treatment
-    if normalize == 'byGroup' and avgAnimal:
-        warnings.warn("With 'byGroup' normalization, the treatment with max response may have no variability, resulting in zero error bars.")
-    
+    # Check whether control treatment exists if specified
+    if ctrl_treat is not None and ctrl_treat not in df['treatment'].unique():
+        raise ValueError(f"{ctrl_treat} not found in the 'treatment' column.")
+
     # Check whether normalization is applicable
     if normalize == 'byGroup' and not avgAnimal:
         warnings.warn("'byGroup' normalization requires 'avgAnimal=True' - skipping normalization")
@@ -612,18 +623,39 @@ def barplot_avgDFF_singleDB(df: pd.DataFrame, dB_plot: int = 80, resp_col: str =
 
     # Filter data for the specified dB level
     df_filtered = df[df['dB'] == dB_plot].copy().reset_index(drop=True)
-        
+    
     # Apply normalization if specified
     if normalize == 'byTrial':
         # Normalize each trial's response to the max response within the same animal
         df_filtered[resp_col] = df_filtered.groupby('dir', sort=False)[resp_col].transform(lambda x: (x / x.max()) * 100)
+
     elif normalize == 'byGroup' and avgAnimal:
-        # First calculate mean response for each animal/treatment combination
+        # Get the first treatment that appears in the dataframe as control if not specified
+        control_treatment = ctrl_treat if ctrl_treat is not None else df_filtered['treatment'].iloc[0]
+        # Verify control treatment exists for all animals
+        missing_ctrl = set(df_filtered['dir']) - set(df_filtered[df_filtered['treatment'] == control_treatment]['dir'])
+        if missing_ctrl:
+            raise ValueError(f"Animals {missing_ctrl} missing control treatment '{control_treatment}'")
+        # Calculate mean response for each animal/treatment combination
         temp_means = df_filtered.groupby(['dir', 'treatment'], sort=False)[resp_col].mean().reset_index()
-        # Normalize to the max mean response within each animal
-        temp_means[resp_col] = temp_means.groupby('dir', sort=False)[resp_col].transform(lambda x: (x / x.max()) * 100)
+        # Get control group means for each animal
+        control_means = temp_means[temp_means['treatment'] == control_treatment].set_index('dir')[resp_col]
+        # Normalize all treatments to the control group mean for each animal
+        temp_means[resp_col] = temp_means.groupby('dir', sort=False)[resp_col].transform(lambda x: (x / control_means[x.name]) * 100)
         # Merge the normalized values back to the original dataframe
         df_filtered = df_filtered.drop(resp_col, axis=1).merge(temp_means, on=['dir', 'treatment'])
+
+    elif normalize == 'trial2group':
+        # Get the first treatment that appears in the dataframe as control if not specified
+        control_treatment = ctrl_treat if ctrl_treat is not None else df_filtered['treatment'].iloc[0]
+        # Verify control treatment exists for all animals
+        missing_ctrl = set(df_filtered['dir']) - set(df_filtered[df_filtered['treatment'] == control_treatment]['dir'])
+        if missing_ctrl:
+            raise ValueError(f"Animals {missing_ctrl} missing control treatment '{control_treatment}'")
+        # Calculate mean response for control group of each animal
+        control_means = df_filtered[df_filtered['treatment'] == control_treatment].groupby('dir')[resp_col].mean()
+        # Normalize all trials to their animal's control group mean
+        df_filtered[resp_col] = df_filtered.groupby('dir', sort=False)[resp_col].transform(lambda x: (x / control_means[x.name]) * 100)
     
     if avgAnimal:
         # Calculate mean response for each animal under each treatment
