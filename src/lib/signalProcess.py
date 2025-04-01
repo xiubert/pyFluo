@@ -566,7 +566,8 @@ def updateTable_signal(df: pd.DataFrame, qcam2img: dict, mask_name: str = 'respo
         ]
         
         if len(treatment_masks) > 1:
-            raise ValueError(f"Multiple {treatment_key} masks found in {dir}: {treatment_masks}")
+            warnings.warn(f"Multiple {treatment_key} masks found in {dir}: {treatment_masks}, using {treatment_masks[0]}")
+            masks.append(joblib.load(treatment_masks[0]))
         elif len(treatment_masks) == 1:
             # Choose files with treatment-specific names first
             masks.append(joblib.load(treatment_masks[0]))

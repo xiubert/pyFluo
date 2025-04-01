@@ -333,17 +333,12 @@ def getSquareMask(Xcoor: float, Ycoor: float, width: float, height: float,
 
     return mask_output
 
-
 def getROImaskUI(image: np.ndarray, show_mask: bool = True, 
-                 expDir: str = None, saveName: str = "response_mask", 
-                 **kwargs):
+                 expDir: str = None, saveName: str = "response_mask",
+                 existing_roi: np.ndarray = None, **kwargs):
     """
     Creates an interactive interface for defining a polygonal Region of Interest (ROI) on an image 
     and generates a corresponding binary mask. Optionally saves the mask as a `joblib` file in the designated directory.
-
-    This function uses Holoviews and Panel to provide an interactive tool for drawing a polygon 
-    on a given image. It generates a binary mask corresponding to the drawn polygon, 
-    optionally displays the mask for visual confirmation and saves the mask as a `joblib` file.
 
     Args:
         image (numpy.ndarray): 2D array representing the input image on which the ROI is drawn.
@@ -353,6 +348,10 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True,
                                 Defaults to `None`.
         saveName (str, optional): Name of the saved `joblib` file.
                                 Defaults to `'response_mask'`.
+        existing_roi (numpy.ndarray, optional): Existing ROI coordinates to load initially.
+                                Should be an Nx2 array of (x,y) coordinates defining the polygon vertices.
+                                The coordinates should be in the same orientation as the displayed image.
+                                Defaults to `None`.
         **kwargs: Optional key word arguments.
 
     Returns:
@@ -360,46 +359,12 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True,
             - pn.Column: A Panel layout object containing the interactive interface 
               (image display, polygon tool, buttons, and mask output visualization).
             - dict: A dictionary containing the generated binary mask under the key `'mask'`, key `'ROIcontour'` for ROI points.
-
-    Notes:
-        - The ROI is defined interactively by drawing a polygon using the Holoviews `PolyDraw` tool.
-        - The mask is created by mapping the polygon coordinates to the image dimensions.
-        - The binary mask is stored in the returned dictionary as a 2D NumPy array.
-        - The mask is flipped vertically to match the visualization orientation in Matplotlib.
-        - The existing file of the same name in the same directory is backed up automatically to avoid overriding.
-
-    Example:
-        >>> import numpy as np
-        >>> from getROImaskUI import getROImaskUI
-        >>> image = np.random.rand(100, 100)  # Example image
-        >>> panel_layout, mask_data = getROImaskUI(image)
-        >>> panel_layout.show()  # Launch the interactive tool
-        >>> # After drawing the ROI and clicking the button:
-        >>> roi_mask = mask_data['mask']
-        >>> print("Generated mask shape:", roi_mask.shape)
-
-    Dependencies:
-        - Holoviews (`hv`)
-        - Panel (`pn`)
-        - Matplotlib (`plt`)
-        - NumPy
-        - re
-        - Shapely's `Path` for polygon operations
-
-    Interactive Tools:
-        - Polygon drawing is handled by Holoviews' `PolyDraw` tool.
-        - `Get ROI mask` button to generate and display the binary mask.
-        - `Save ROI mask` button to save the binary mask as a `joblib` file.
-
-    Limitations:
-        - Only one polygon can be drawn per invocation (due to `num_objects=1`).
-        - Assumes the input image is grayscale or 2D.
-
     """
     # Optionally override parameters using kwargs
     show_mask = kwargs.get('show_mask', show_mask)
     expDir = kwargs.get('expDir', expDir)
     saveName = kwargs.get('saveName', saveName)
+    existing_roi = kwargs.get('existing_roi', existing_roi)
 
     # for running in jupyter notebook
     pn.extension()
@@ -412,7 +377,51 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True,
         cmap='jet',
     )
 
-    poly = hv.Polygons([])
+    # Create dictionary to store results
+    mask_output = {'mask': None, 'ROIcontour': None}
+
+    # Initialize polygon data
+    if existing_roi is not None:
+        # Convert existing ROI to the format required by PolyDraw
+        existing_roi = np.asarray(existing_roi)
+        
+        # Make a copy of the points to avoid modifying the original
+        roi_points = existing_roi.copy()
+        
+        # If the polygon is closed (last point == first point), remove the last point
+        if roi_points.shape[0] > 1 and np.array_equal(roi_points[0], roi_points[-1]):
+            roi_points = roi_points[:-1]
+        
+        # Flip y-coordinates to match the display coordinates
+        # The ROIcontour coordinates have flipped y values, so un-flip them
+        if image.shape[0] > 0:
+            roi_points[:, 1] = image.shape[0] - roi_points[:, 1]
+        
+        # Try different formats for initializing the polygon
+        try:
+            # Try format 1: direct list of points for newer holoviews versions
+            poly = hv.Polygons([roi_points])
+        except Exception as e1:
+            try:
+                # Try format 2: dict format
+                xs = roi_points[:, 0].tolist()
+                ys = roi_points[:, 1].tolist()
+                poly_data = [{'x': xs, 'y': ys}]
+                poly = hv.Polygons(poly_data)
+            except Exception as e2:
+                try:
+                    # Try format 3: tuple format
+                    xs = roi_points[:, 0].tolist()
+                    ys = roi_points[:, 1].tolist()
+                    poly = hv.Polygons([(xs, ys)])
+                except Exception as e3:
+                    print(f"Failed to initialize polygon with existing ROI: {e1}, {e2}, {e3}")
+                    poly = hv.Polygons([])
+    else:
+        # Start with an empty polygon if no existing ROI is provided
+        poly = hv.Polygons([])
+
+    # Create the polygon drawing stream
     poly_stream = streams.PolyDraw(source=poly, drag=True, num_objects=1, show_vertices=True)
 
     # Create dynamic polygon element
@@ -422,49 +431,57 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True,
         opts.Polygons(fill_alpha=0.3, active_tools=['poly_draw'])
     )
 
-    # Create button to get polygon coordinates and generate mask
-    mask_output = {'mask': None}  # To store the generated mask
+    # Create output pane for mask visualization
     output_pane = pn.pane.Matplotlib(height=300)  # To display the mask
 
     def get_coords(event):
-        if poly_stream.data:
+        if not poly_stream.data:
+            print("No polygon data available")
+            return
             
-            coords = poly_stream.data
-            # Convert coordinates to points format
-            points = list(zip(coords['xs'][0], coords['ys'][0]))  # Assumes one polygon
-           
-
-            # Create and display mask
+        # Extract coordinates from the stream data
+        coords = poly_stream.data
+        print(f"Polygon data: {coords}")  # Debug output
+        
+        # Try to extract points - handle different possible formats
+        try:
+            if 'xs' in coords and 'ys' in coords:
+                # Format: {'xs': [[x1, x2, ...]], 'ys': [[y1, y2, ...]]}
+                points = list(zip(coords['xs'][0], coords['ys'][0]))
+            elif 'x' in coords and 'y' in coords:
+                # Format: [{'x': [x1, x2, ...], 'y': [y1, y2, ...]}]
+                points = list(zip(coords[0]['x'], coords[0]['y']))
+            else:
+                print(f"WARNING: Unexpected format for polygon coordinates: {coords}")
+                return
+                
+            # Create mask from points
             mask = polygon2mask(points, image_shape=image.shape)
             
-            # debug
-            # print("Poly Stream Data:", poly_stream.data)
-            # print("Extracted Points:", points)
-            # print("Mask Created: Shape:", mask.shape, "Sum of Mask:", mask.sum())
-
             # Flip the mask vertically for correct display with matplotlib
             mask_flipped = np.flipud(mask)
             mask_output['mask'] = mask_flipped  # Store the mask in the result dictionary
+            
+            # Create the ROIcontour with flipped y-coordinates
             contour = np.array(points)
-            contour[:,1] = mask_flipped.shape[0]-contour[:,1] #flip y values
-            # close polygon
-            contour = np.vstack([contour,contour[0,:]])
+            contour[:,1] = mask_flipped.shape[0] - contour[:,1]  # flip y values
+            
+            # Close polygon if not already closed
+            if not np.array_equal(contour[0], contour[-1]):
+                contour = np.vstack([contour, contour[0,:]])
+                
             mask_output['ROIcontour'] = contour
 
             # Visualize
             if show_mask:
-                # plt.close('all')
-                # plt.figure()
-                # plt.imshow(mask_flipped, cmap='gray')
-                # plt.title('ROI Mask')
-                # plt.xlabel('X')
-                # plt.ylabel('Y')
-                # plt.show()
                 fig, ax = plt.subplots()
                 ax.imshow(mask_flipped, cmap='gray')
                 plt.close(fig)
                 ax.set_title("ROI Mask")
                 output_pane.object = fig  # Update the output pane with the new plot
+                
+        except Exception as e:
+            print(f"Error processing polygon: {e}")
 
     # Button to generate the mask
     mask_button = pn.widgets.Button(name='Get ROI mask', button_type='primary')
@@ -483,12 +500,6 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True,
                 print("File existing in the same path.")
                 exist_files = glob(savePath.replace('.joblib', '_[0-9][0-9][0-9].joblib'))
 
-                # Increment the maximum sequence number by 1 as backup path
-                # seq_list = []
-                # for file in exist_files:
-                #     seqNum = re.search(r"_(\d{3})\.joblib$", file)
-                #     seq_list.append(int(seqNum.group(1)))
-                # seq_max = max(seq_list) if seq_list else 0
                 seq_numbers = [
                     int(match.group(1)) for f in exist_files if (match := re.search(r"_(\d{3})\.joblib$", f))
                 ]
@@ -511,12 +522,212 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True,
     save_button = pn.widgets.Button(name='Save ROI mask', button_type='success', disabled=(expDir is None))
     save_button.on_click(save_mask)
 
+    # Button to load existing ROI
+    load_roi_button = None
+    if existing_roi is not None:
+        load_roi_button = pn.widgets.Button(name='Load Existing ROI', button_type='warning')
+        load_roi_button.on_click(get_coords)
+
     # Create the Panel layout
-    layout = pn.Column(plot, pn.Row(mask_button, save_button), output_pane)
+    if load_roi_button:
+        layout = pn.Column(
+            plot, 
+            pn.Row(mask_button, save_button, load_roi_button), 
+            output_pane
+        )
+    else:
+        layout = pn.Column(
+            plot, 
+            pn.Row(mask_button, save_button), 
+            output_pane
+        )
 
     # Return the Panel layout and allow access to the mask
-    # return pn.Column(plot, button), mask_output
     return layout, mask_output
+
+# def getROImaskUI(image: np.ndarray, show_mask: bool = True, 
+#                  expDir: str = None, saveName: str = "response_mask", 
+#                  **kwargs):
+#     """
+#     Creates an interactive interface for defining a polygonal Region of Interest (ROI) on an image 
+#     and generates a corresponding binary mask. Optionally saves the mask as a `joblib` file in the designated directory.
+
+#     This function uses Holoviews and Panel to provide an interactive tool for drawing a polygon 
+#     on a given image. It generates a binary mask corresponding to the drawn polygon, 
+#     optionally displays the mask for visual confirmation and saves the mask as a `joblib` file.
+
+#     Args:
+#         image (numpy.ndarray): 2D array representing the input image on which the ROI is drawn.
+#         show_mask (bool): If True, displays the binary mask of the ROI after it is created.
+#         expDir (str, optional): Directory (folder) where the binary mask is to be saved.
+#                                 - `None`: The binary mask cannot be saved. The `Save ROI mask` button is grey and cannot be clicked.
+#                                 Defaults to `None`.
+#         saveName (str, optional): Name of the saved `joblib` file.
+#                                 Defaults to `'response_mask'`.
+#         **kwargs: Optional key word arguments.
+
+#     Returns:
+#         tuple:
+#             - pn.Column: A Panel layout object containing the interactive interface 
+#               (image display, polygon tool, buttons, and mask output visualization).
+#             - dict: A dictionary containing the generated binary mask under the key `'mask'`, key `'ROIcontour'` for ROI points.
+
+#     Notes:
+#         - The ROI is defined interactively by drawing a polygon using the Holoviews `PolyDraw` tool.
+#         - The mask is created by mapping the polygon coordinates to the image dimensions.
+#         - The binary mask is stored in the returned dictionary as a 2D NumPy array.
+#         - The mask is flipped vertically to match the visualization orientation in Matplotlib.
+#         - The existing file of the same name in the same directory is backed up automatically to avoid overriding.
+
+#     Example:
+#         >>> import numpy as np
+#         >>> from getROImaskUI import getROImaskUI
+#         >>> image = np.random.rand(100, 100)  # Example image
+#         >>> panel_layout, mask_data = getROImaskUI(image)
+#         >>> panel_layout.show()  # Launch the interactive tool
+#         >>> # After drawing the ROI and clicking the button:
+#         >>> roi_mask = mask_data['mask']
+#         >>> print("Generated mask shape:", roi_mask.shape)
+
+#     Dependencies:
+#         - Holoviews (`hv`)
+#         - Panel (`pn`)
+#         - Matplotlib (`plt`)
+#         - NumPy
+#         - re
+#         - Shapely's `Path` for polygon operations
+
+#     Interactive Tools:
+#         - Polygon drawing is handled by Holoviews' `PolyDraw` tool.
+#         - `Get ROI mask` button to generate and display the binary mask.
+#         - `Save ROI mask` button to save the binary mask as a `joblib` file.
+
+#     Limitations:
+#         - Only one polygon can be drawn per invocation (due to `num_objects=1`).
+#         - Assumes the input image is grayscale or 2D.
+
+#     """
+#     # Optionally override parameters using kwargs
+#     show_mask = kwargs.get('show_mask', show_mask)
+#     expDir = kwargs.get('expDir', expDir)
+#     saveName = kwargs.get('saveName', saveName)
+
+#     # for running in jupyter notebook
+#     pn.extension()
+#     hv.extension('bokeh')
+
+#     # Initialize Holoviews objects
+#     image_hv = hv.Image(image, bounds=(0, 0, image.shape[1], image.shape[0])).opts(
+#         width=image.shape[1] * 3, 
+#         height=image.shape[0] * 3,
+#         cmap='jet',
+#     )
+
+#     poly = hv.Polygons([])
+#     poly_stream = streams.PolyDraw(source=poly, drag=True, num_objects=1, show_vertices=True)
+
+#     # Create dynamic polygon element
+#     dmap = hv.DynamicMap(lambda data: poly.clone(data), streams=[poly_stream])
+
+#     plot = (image_hv * poly).opts(
+#         opts.Polygons(fill_alpha=0.3, active_tools=['poly_draw'])
+#     )
+
+#     # Create button to get polygon coordinates and generate mask
+#     mask_output = {'mask': None}  # To store the generated mask
+#     output_pane = pn.pane.Matplotlib(height=300)  # To display the mask
+
+#     def get_coords(event):
+#         if poly_stream.data:
+            
+#             coords = poly_stream.data
+#             # Convert coordinates to points format
+#             points = list(zip(coords['xs'][0], coords['ys'][0]))  # Assumes one polygon
+           
+
+#             # Create and display mask
+#             mask = polygon2mask(points, image_shape=image.shape)
+            
+#             # debug
+#             # print("Poly Stream Data:", poly_stream.data)
+#             # print("Extracted Points:", points)
+#             # print("Mask Created: Shape:", mask.shape, "Sum of Mask:", mask.sum())
+
+#             # Flip the mask vertically for correct display with matplotlib
+#             mask_flipped = np.flipud(mask)
+#             mask_output['mask'] = mask_flipped  # Store the mask in the result dictionary
+#             contour = np.array(points)
+#             contour[:,1] = mask_flipped.shape[0]-contour[:,1] #flip y values
+#             # close polygon
+#             contour = np.vstack([contour,contour[0,:]])
+#             mask_output['ROIcontour'] = contour
+
+#             # Visualize
+#             if show_mask:
+#                 # plt.close('all')
+#                 # plt.figure()
+#                 # plt.imshow(mask_flipped, cmap='gray')
+#                 # plt.title('ROI Mask')
+#                 # plt.xlabel('X')
+#                 # plt.ylabel('Y')
+#                 # plt.show()
+#                 fig, ax = plt.subplots()
+#                 ax.imshow(mask_flipped, cmap='gray')
+#                 plt.close(fig)
+#                 ax.set_title("ROI Mask")
+#                 output_pane.object = fig  # Update the output pane with the new plot
+
+#     # Button to generate the mask
+#     mask_button = pn.widgets.Button(name='Get ROI mask', button_type='primary')
+#     mask_button.on_click(get_coords)
+
+#     def save_mask(event):
+#         if mask_output['mask'] is not None:
+#             if expDir is not None:
+#                 savePath = os.path.join(expDir, f"{saveName}.joblib")
+#                 print(f"Save Path: {savePath}")
+#             else:
+#                 print("Experiment directory not specified.")
+
+#             # Backup existing file
+#             if os.path.exists(savePath):
+#                 print("File existing in the same path.")
+#                 exist_files = glob(savePath.replace('.joblib', '_[0-9][0-9][0-9].joblib'))
+
+#                 # Increment the maximum sequence number by 1 as backup path
+#                 # seq_list = []
+#                 # for file in exist_files:
+#                 #     seqNum = re.search(r"_(\d{3})\.joblib$", file)
+#                 #     seq_list.append(int(seqNum.group(1)))
+#                 # seq_max = max(seq_list) if seq_list else 0
+#                 seq_numbers = [
+#                     int(match.group(1)) for f in exist_files if (match := re.search(r"_(\d{3})\.joblib$", f))
+#                 ]
+#                 seq_max = max(seq_numbers) if seq_numbers else 0
+
+#                 backupPath = savePath.replace('.joblib', f"_{seq_max + 1:03}.joblib")
+#                 os.rename(savePath, backupPath)
+#                 print(f"Existing files backed up to: {backupPath}")
+                         
+#             # Save the new mask
+#             try:
+#                 joblib.dump(mask_output['mask'], savePath)
+#                 print(f"Mask saved successfully to: {savePath}")
+#             except Exception as e:
+#                 print(f"Failed to save mask: {e}")
+#         else:
+#             print("No mask to save.")
+    
+#     # Button to save the mask
+#     save_button = pn.widgets.Button(name='Save ROI mask', button_type='success', disabled=(expDir is None))
+#     save_button.on_click(save_mask)
+
+#     # Create the Panel layout
+#     layout = pn.Column(plot, pn.Row(mask_button, save_button), output_pane)
+
+#     # Return the Panel layout and allow access to the mask
+#     # return pn.Column(plot, button), mask_output
+#     return layout, mask_output
 
 
 def qcams2roiTrace(qcams: list, baseline : bool = False, **kwargs):

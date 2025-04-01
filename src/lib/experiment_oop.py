@@ -1,15 +1,24 @@
 import os
 import plotly.graph_objects as go
 import plotly.subplots as sp
+import matplotlib.pyplot as plt
 import numpy as np
 from operator import itemgetter
 
 import lib.fileIngest as fileIngest
 import lib.plotting as plotting
 import lib.metadataProcess as metadataProcess
+import lib.imgProcess as imgProcess
+import lib.signalProcess as signalProcess
 
 class Experiment:
-    def __init__(self, directory, parent=None, format: str = 'MAK', subfolder: bool = False):
+    def __init__(self, directory, 
+                 parent = None, 
+                 format: str = 'MAK', 
+                 subfolder: bool = False, 
+                 drop_missing_dB: bool = True,
+                 t_base: tuple = (2.0, 3.0), t_resp: tuple = (3.3, 4.0)
+                 ):
         """
         Initializes an Experiment instance, either standalone or as part of an ExperimentGroup.
 
@@ -18,11 +27,14 @@ class Experiment:
             parent (ExperimentGroup, optional): Reference to the parent ExperimentGroup, if any.
             format (str): Format for extracting dB values from pulse metadata ('MAK' or 'PAC').
             subfolder (bool): Whether to search recursively within subfolders.
+            drop_missing_dB (bool): Whether to automatically drop traces where dB was not identified.
         """
         self.directory = directory
         self.parent = parent  # Parent experiment group (optional)
         self.format = format
         self.subfolder = subfolder
+        self.t_base = t_base
+        self.t_resp = t_resp
 
         if self.parent is not None:
             # If part of a group, reference the group's DataFrame
@@ -32,6 +44,8 @@ class Experiment:
         else:
             # If standalone, create its own DataFrame and storage
             self.df = fileIngest.qcamPath2table([self.directory], self.format, self.subfolder)
+            if drop_missing_dB:
+                self.df = self.df[~self.df['dB'].isna()]
             # Load treatment / injection metadata
             self.df['treatment'] = metadataProcess.getInjectionCond(self.df)
             
@@ -41,14 +55,20 @@ class Experiment:
     def _repr_html_(self):
         return self.df._repr_html_()
 
-    def load_qcam_data(self):
+    def load_qcam_data(self, **kwargs):
         """Loads qcam data, either independently or using the parent ExperimentGroup."""
         if self.parent:
             # eventually may need method here for adding experiments to experiment group
             pass
             # self.parent.load_qcam_data()  # Load centrally for all experiments
         else:
-            self.df, self.qcam2img, self.qcam2header = fileIngest.loadQCamTable(self.df)
+            self.df, self.qcam2img, self.qcam2header = fileIngest.loadQCamTable(self.df, **kwargs)
+
+    def process_signal(self, **kwargs):
+        t_base = kwargs.get('t_base', self.t_base)
+        t_resp = kwargs.get('t_resp', self.t_resp)
+        self.df = signalProcess.updateTable_signal(self.df, self.qcam2img, 
+                                                   t_base=t_base, t_resp=t_resp, **kwargs)
 
     def plot_average_fluorescence(self):
         """Plots the average fluorescence trace for this experiment."""
@@ -101,9 +121,38 @@ class Experiment:
             
         plotting.plotDF_levelByTreatment(df_plot,self.qcam2img,**kwargs)
 
+    def plot_respHeatmap(self, **kwargs):
+        t_base = kwargs.get('t_base', self.t_base)
+        t_resp = kwargs.get('t_resp', self.t_resp)
+        plotting.plot_respHeatmap(self.df,  t_baseline = t_base, t_temporalAvg = t_resp, **kwargs)
+
+
+    def get_ROI_mask(self, condition: str = None, **kwargs):
+        if condition:
+            qcams = self.df.loc[self.df['treatment'].str.startswith(condition),'qcam'].tolist()
+            avgImgSeries = np.array(itemgetter(*qcams)(self.qcam2img)).mean(axis=0)
+            saveName = f"response_mask_{condition}"
+        else:
+            avgImgSeries = np.array(list(self.qcam2img.values())).mean(axis=0)
+            saveName = "response_mask"
+
+        spatialDFF = imgProcess.calcSpatialDFFresp(avgImgSeries, **kwargs)
+        ui, mask_output = imgProcess.getROImaskUI(spatialDFF, expDir = self.directory, saveName=saveName, **kwargs)
+        
+        return ui, mask_output, avgImgSeries, spatialDFF
+
+    def plot_ROI_mask(self, mask_output, avgImgSeries, spatialDFF):
+        _,ax = plt.subplots(1,2)
+        ax[0].imshow(avgImgSeries.mean(axis=-1),cmap='gray')
+        ax[1].imshow(spatialDFF,cmap='jet')
+        for axi in ax:
+            axi.plot(mask_output['ROIcontour'][:,0],mask_output['ROIcontour'][:,1],'w-',linewidth=2)
+
+
+
 
 class ExperimentGroup:
-    def __init__(self, experiment_dirs: list, format: str = 'MAK', subfolder: bool = False):
+    def __init__(self, experiment_dirs: list, format: str = 'MAK', subfolder: bool = False, drop_missing_dB: bool = True):
         """
         Initializes an ExperimentGroup that contains multiple experiments.
 
@@ -111,6 +160,8 @@ class ExperimentGroup:
             experiment_dirs (list): List of directories corresponding to individual experiments.
             format (str): Format for extracting dB values from pulse metadata ('MAK' or 'PAC').
             subfolder (list[bool], optional): Whether to search recursively within subfolders.
+            drop_missing_dB (bool): Whether to automatically drop traces where dB was not identified.
+
         """
         self.experiment_dirs = experiment_dirs
         self.format = format
@@ -120,6 +171,8 @@ class ExperimentGroup:
 
         # Generate metadata table for all experiments at once
         self.df = fileIngest.qcamPath2table(self.experiment_dirs, self.format, self.subfolder)
+        if drop_missing_dB:
+            self.df = self.df[~self.df['dB'].isna()]
 
         # Load treatment / injection metadata
         self.df['treatment'] = metadataProcess.getInjectionCond(self.df)
@@ -130,9 +183,9 @@ class ExperimentGroup:
     def _repr_html_(self):
         return self.df._repr_html_()
 
-    def load_qcam_data(self):
+    def load_qcam_data(self, **kwargs):
         """Loads qcam data for all experiments efficiently."""
-        self.df, qcam2img, qcam2header = fileIngest.loadQCamTable(self.df)
+        self.df, qcam2img, qcam2header = fileIngest.loadQCamTable(self.df, **kwargs)
 
         # Update shared storage
         self.qcam2img.update(qcam2img)

@@ -207,15 +207,15 @@ def qcamPath2table(exprmntPaths: list[str], format: str = 'MAK', subfolder: bool
     return df
 
 
-def loadQCamTable(df: pd.DataFrame, preExpose_excl: bool = False, loopGap: float = 30) -> tuple[pd.DataFrame, dict, dict]:
+def loadQCamTable(df: pd.DataFrame, exclude_non_loop_trials: bool = False, loop_gap_s: float = 30) -> tuple[pd.DataFrame, dict, dict]:
     """
     Processes a DataFrame of qcam metadata and returns the updated DataFrame along with image and header data.
 
     Args:
         df (pd.DataFrame): A DataFrame containing qcam metadata, including a column named 'qcam' with paths to `.qcamraw` files.
-        preExpose_excl (bool, optional): Whether to remove pre-exposing trials.
-        loopGap (float, optional): Time gap (in seconds) between adjacent trials within the loop.
-                                   If `preExpose_excl` is `True`, first few trials with gaps above this threshold will be removed.
+        exclude_non_loop_trials (bool, optional): Whether to remove trials collected outside of collection loop.
+        loop_gap_s (float, optional): Time gap (in seconds) between adjacent trials within the collection loop.
+                                   If `exclude_non_loop_trials` is `True`, first few trials with gaps above this threshold will be removed.
 
     Returns:
         tuple:
@@ -262,15 +262,15 @@ def loadQCamTable(df: pd.DataFrame, preExpose_excl: bool = False, loopGap: float
     # Rearrange traces in ascending time order
     df = df.sort_values(by='timestamp_init', ignore_index=True)
 
-    if preExpose_excl:
+    if exclude_non_loop_trials:
         # Remove first few pre-exposing trials before the loop for each animal and treatment
         def remove_preExposeTrial(df_group):
             # Calculate time gaps (in seconds) between adjacent trials
             df_group['time_diff'] = df_group['timestamp_init'].diff().dt.total_seconds()
             
             # Identify the first and last trial where the time gap is below 30 seconds
-            first_loopTrial_index = df_group[df_group['time_diff'] <= loopGap].index[0] - 1    # -1 because this is the second trial of the loop
-            last_loopTrial_index = df_group[df_group['time_diff'] <= loopGap].index[-1] + 1    # +1 to include the last trial of the loop
+            first_loopTrial_index = df_group[df_group['time_diff'] <= loop_gap_s].index[0] - 1    # -1 because this is the second trial of the loop
+            last_loopTrial_index = df_group[df_group['time_diff'] <= loop_gap_s].index[-1] + 1    # +1 to include the last trial of the loop
             
             # Only remain loop trials in between
             df_group_drop = df_group.loc[first_loopTrial_index:last_loopTrial_index].reset_index(drop=True)
