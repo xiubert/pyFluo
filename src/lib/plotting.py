@@ -121,6 +121,9 @@ def plot_respHeatmap(df: pd.DataFrame, dB_plot: int = 80, same_scale: bool = Tru
     treatments = df['treatment'].unique()
     nTreat = len(treatments)
     fig, ax = plt.subplots(nTreat, 2, figsize=(10, 3*nTreat))
+    if nTreat == 1:
+        # Ensure ax is 2D even for one treatment
+        ax = ax.reshape(1, -1)
 
     if same_scale:
         # Get global min and max dFF for consistent color scaling in heatmaps
