@@ -1,7 +1,11 @@
 import os
+import pandas as pd
 import plotly.graph_objects as go
 import plotly.subplots as sp
+import plotly.colors
 import matplotlib.pyplot as plt
+import matplotlib.cm as cm
+import seaborn as sns
 import numpy as np
 from operator import itemgetter
 
@@ -78,29 +82,38 @@ class Experiment:
             vertical_spacing=0.1,
         )
 
-        # in case ExperimentGroup df was filtered:
+        # Handle filtered dataframe
         if self.parent is not None:
             df_plot = self.parent.df[self.parent.df['dir'] == self.directory]
         else:
             df_plot = self.df
 
-        for file in df_plot['qcam']:
-            fig.add_trace(go.Scatter(y=self.qcam2img[file].mean(axis=(0, 1)), 
-                                     name=os.path.basename(file)),
-                                     row=1, col=1)
+        # Generate colormap for the number of traces
+        colors = plotly.colors.sample_colorscale(plotly.colors.get_colorscale('RdBu'), np.linspace(0, 1, len(df_plot)))[::-1]
+
+        # Plot each trace with its corresponding color
+        for (_,df_time_file), color in zip(df_plot.sort_values(by='timestamp_init')[['timestamp_init','qcam']].iterrows(), colors):
+            fig.add_trace(go.Scatter(y=self.qcam2img[df_time_file['qcam']].mean(axis=(0, 1)), 
+                                    name=f"{pd.to_datetime(df_time_file['timestamp_init']).strftime('%H:%M:%S')}_{os.path.basename(df_time_file['qcam'])}",
+                                    line=dict(color=color, width=1)),
+                        row=1, col=1)
         
+        # Plot the experiment average
         fig.add_trace(
             go.Scatter(y=np.array(itemgetter(*df_plot['qcam'].tolist())(self.qcam2img)).mean(axis=(0,1,2)),
-                       name="experiment average"),
+                    name="experiment average",
+                    line=dict(color='black', width=2)),  # Black dashed for contrast
             row=2, col=1
         )
 
+        # Update layout
         fig.update_layout(title=f"Avg Fluorescence - {self.directory}",
-                          xaxis1=dict(title="average across all traces"),
-                          xaxis2=dict(title='frame'),
-                          yaxis=dict(title='rawF'),
-                          yaxis2=dict(title='rawF')
+                        xaxis1=dict(title="average across all traces"),
+                        xaxis2=dict(title='frame'),
+                        yaxis=dict(title='rawF'),
+                        yaxis2=dict(title='rawF')
         )
+
         fig.show()
     
     def plot_experiment_overview(self, **kwargs):
@@ -111,6 +124,71 @@ class Experiment:
             qFiles = self.df['qcam'].tolist()
          
         plotting.experimentAvgPlot(qFiles=qFiles,**kwargs)
+
+    def plot_experiment_segments(self, n_segments, **kwargs):
+        colors = cm.coolwarm(np.linspace(0, 1, n_segments))
+
+        df_plot = self.df
+        t = signalProcess.getTimeVec(df_plot.iloc[0]['nFrames'])
+        df_plot['rawF'] = df_plot['qcam'].apply(lambda x: self.qcam2img[x].mean(axis=(0,1)))
+        df_plot['F_linFilt'] = df_plot.apply(lambda x: signalProcess.subtractLinFit(t,x['rawF'], offset=False)[0],axis=1)
+
+        for d, df_dir in df_plot.groupby('dir'):
+
+            # Convert groupby object to list and sort
+            treatments = [(treatment, df) for treatment, df in df_dir.groupby('treatment')]
+            # Sort so that pre comes first
+            treatments.sort(key=lambda x: 0 if 'pre' in x[0] else 1)
+
+            _, ax = plt.subplots(2, len(treatments), figsize=(14, 8))
+
+            for t_i, (treatment, df_treat) in enumerate(treatments):
+                # Calculate elapsed_s within the treatment
+                df_treat['elapsed_s'] = (df_treat['timestamp_init'] - df_treat['timestamp_init'].min()).dt.total_seconds()
+                
+                # Dynamically calculate the quartiles (qcut) for the elapsed time
+                if n_segments==5:
+                    df_treat['elapsed_q'] = pd.qcut(df_treat['elapsed_s'], q=5, labels=['0-20%', '20-40%', '40-60%', '60-80%', '80-100%'])
+                elif n_segments==4:
+                    df_treat['elapsed_q'] = pd.qcut(df_treat['elapsed_s'], q=4, labels=['0-25%', '25-50%', '50-75%', '75-100%'])
+                elif n_segments==3:
+                    df_treat['elapsed_q'] = pd.qcut(df_treat['elapsed_s'], q=3, labels=['0-33%', '33-66%', '66-100%'])
+                elif n_segments==2:
+                    df_treat['elapsed_q'] = pd.qcut(df_treat['elapsed_s'], q=2, labels=['0-50%', '50-100%'])
+
+                for i, (a, b) in enumerate(df_treat.groupby('elapsed_q')):
+                    u, upsem, umsem = signalProcess.meanPlusMinusSem(np.array(b['F_linFilt'].tolist()))
+                    ax_p1 = (ax[0,t_i] if len(treatments)>1 else ax[0])
+                    ax_p1.plot(t, u, '-', color=colors[i], label=a)
+                    ax_p1.fill_between(t, umsem, upsem, alpha=0.2)
+                    ax_p1.set_xlabel('time (s)')
+                    ax_p1.set_ylabel('F')
+                    ax_p1.set_title(treatment)
+                ax_p1.legend(title="segment",loc='lower left', bbox_to_anchor=(1, 0.5))
+                
+                ax_p2 = (ax[1,t_i] if len(treatments)>1 else ax[1])
+                sns.countplot(
+                    data=df_treat,
+                    x='elapsed_q',
+                    hue='dB',
+                    palette='Reds',
+                    saturation=1,
+                    ax = ax_p2
+                )
+
+                # Improve the appearance
+                ax_p2.set_title(treatment, fontsize=12)
+                ax_p2.set_xlabel('Elapsed Time Segment', fontsize=10)
+                ax_p2.set_ylabel('Count', fontsize=10)
+                ax_p2.legend(title='dB', bbox_to_anchor=(1.15, 1), loc='upper right')
+
+                # Add some spacing for the legend
+                plt.tight_layout()
+        
+            plt.suptitle(f"{d}")  # Title includes `dir` only
+            plt.tight_layout(rect=[0, 0, 1, 0.95])  # Make room for suptitle
+            plt.show()
+
     
     def plotDF_levelByTreatment(self, **kwargs):
         # in case ExperimentGroup df was filtered:
@@ -120,6 +198,7 @@ class Experiment:
             df_plot = self.df
             
         plotting.plotDF_levelByTreatment(df_plot,self.qcam2img,**kwargs)
+
 
     def plot_respHeatmap(self, **kwargs):
         t_base = kwargs.get('t_base', self.t_base)
