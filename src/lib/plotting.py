@@ -246,14 +246,14 @@ def plot_traces(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF_ROI_ra
     plt.show()
 
 
-def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict, dFResp: bool = False, 
+def plotDF_levelByTreatment(df: pd.DataFrame, resp_col: str = 'dFF_ROI_raw', dFResp: bool = False, 
                             sepPlot: bool = True, errBar: bool = True, **kwargs):
     """
     Plot fluorescence response (dFF or dF) traces by treatment and dB.
 
     Args:
         df (pd.DataFrame): Metadata dataframe including columns `dB` and `treatment`.
-        qcam2img (dict): Dictionary mapping each qcam file path to its corresponding image data.
+        resp_col (str, optional): Column name for response traces. Defaults to `dFF_ROI_raw`.
         dFResp (bool, optional): If true, calculate dF response rather than dFF.
         sepPlot (bool, optional): Whether to create separate subplots for each treatment.
                                   - `True`: For each subplot, lower dBs are in cooler colors and higher dBs are in warmer colors.
@@ -261,7 +261,12 @@ def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict, dFResp: bool = Fal
                                              with lower dBs in lighter colors and higher dBs in darker colors.
         errBar (bool, optional): If true, add error bars to curves.
         **kwargs: Optional keyword arguments.
-            example: roi_mask (np.ndarray): 2D binary mask array specifying the region of interest.
+            example: qcam2img (dict): Dictionary mapping each qcam file path to its corresponding image data.
+                     roi_mask (np.ndarray): 2D binary mask array specifying the region of interest.
+                     t_base (tuple): Time window (in seconds) for baseline.
+
+    Notes:
+        - kwargs `qcam2img`, `roi_mask` and `t_base` are required only when `resp_col` is None or does not exist.
     """
 
     # Sort dataframe by treatment (consistent with initial order) and dB (in ascending order)
@@ -289,12 +294,18 @@ def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict, dFResp: bool = Fal
 
     # Calculate fluorescence response within each treatment/dB combination
     for (treatment, dB), df_group in df_sorted.groupby(['treatment', 'dB'], sort=False):
-        imgSeries = np.array(itemgetter(*df_group['qcam'])(qcam2img))  # Shape: [trace, Y, X, frame]
-        roi_mask = kwargs.get('roi_mask', np.ones(imgSeries.shape[1:3]))
-        signal = imgSeries[:, roi_mask == 1, :].mean(axis=1)
-
-        dFF, dF, _ = signalProcess.dFFcalc(signal, **kwargs)
-        response = dF if dFResp else dFF
+        if resp_col in df_group.columns:
+            response = np.vstack(df_group[resp_col])
+        else:
+            # If column 'resp_col' does not exist, extract image data from qcam files
+            qcam2img = kwargs.get('qcam2img', {})
+            if not qcam2img:
+                raise ValueError("'resp_col' is not available. Provide 'qcam2img' in kwargs.")
+            imgSeries = np.array(itemgetter(*df_group['qcam'])(qcam2img))  # Shape: [trace, Y, X, frame]
+            roi_mask = kwargs.get('roi_mask', np.ones(imgSeries.shape[1:3]))
+            signal = imgSeries[:, roi_mask == 1, :].mean(axis=1)
+            dFF, dF, _ = signalProcess.dFFcalc(signal, **kwargs)
+            response = dF if dFResp else dFF
         mean, upper, lower = signalProcess.meanPlusMinusSem(response)
         t = signalProcess.getTimeVec(len(mean), **kwargs)
 
