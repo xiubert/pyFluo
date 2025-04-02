@@ -246,7 +246,7 @@ def plot_traces(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF_ROI_ra
     plt.show()
 
 
-def plotDF_levelByTreatment(df: pd.DataFrame, resp_col: str = 'dFF_ROI_raw', dFResp: bool = False, 
+def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict = None, resp_col: str = None, dFResp: bool = False, 
                             sepPlot: bool = True, errBar: bool = True, **kwargs):
     """
     Plot fluorescence response (dFF or dF) traces by treatment and dB.
@@ -294,13 +294,10 @@ def plotDF_levelByTreatment(df: pd.DataFrame, resp_col: str = 'dFF_ROI_raw', dFR
 
     # Calculate fluorescence response within each treatment/dB combination
     for (treatment, dB), df_group in df_sorted.groupby(['treatment', 'dB'], sort=False):
-        if resp_col in df_group.columns:
+        if resp_col and resp_col in df_group.columns:
             response = np.vstack(df_group[resp_col])
         else:
             # If column 'resp_col' does not exist, extract image data from qcam files
-            qcam2img = kwargs.get('qcam2img', {})
-            if not qcam2img:
-                raise ValueError("'resp_col' is not available. Provide 'qcam2img' in kwargs.")
             imgSeries = np.array(itemgetter(*df_group['qcam'])(qcam2img))  # Shape: [trace, Y, X, frame]
             roi_mask = kwargs.get('roi_mask', np.ones(imgSeries.shape[1:3]))
             signal = imgSeries[:, roi_mask == 1, :].mean(axis=1)
@@ -374,7 +371,7 @@ def plotDF_levelByTreatment(df: pd.DataFrame, resp_col: str = 'dFF_ROI_raw', dFR
 
     # Update layout
     fig.update_layout(
-        title=f"{df_sorted.dir.unique()[0]}: Fluorescence response at each sound level by treatment",
+        title=f"{df_sorted.dir.unique()[0]}: Fluorescence response at each sound level by treatment | signal: {(resp_col if resp_col else '')}",
         xaxis_title="time (s)",
         yaxis_title=("dF" if dFResp else "dFF")
     )
