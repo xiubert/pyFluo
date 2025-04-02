@@ -556,7 +556,8 @@ def updateTable_signal(df: pd.DataFrame, qcam2img: dict, mask_name: str = 'respo
         treatment_key = 'post' if 'post' in treatment.lower() else 'pre'
         
         # Find all joblib files in the directory
-        all_masks = glob(os.path.join(dir, '*.joblib'))
+        all_masks = glob(os.path.join(dir, '*response_mask*.joblib'))
+        all_masks = [f for f in all_masks if 'contour' not in f]
         
         # Find treatment-specific filenames which contain both '{mask_name}' and '{treatment_key}'
         treatment_masks = [
