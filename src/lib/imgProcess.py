@@ -67,9 +67,10 @@ def calcSpatialDFFresp(imgSeries: np.ndarray,
         spatialDFFresp (numpy array): edge pixels take the value 255
     """
     # Optionally override parameters using kwargs
+    t_baseline = kwargs.get('t_baseline', t_baseline)
     stimlen = kwargs.get('stimlen', stimlen)
-    temporalAvgFrameSpan = kwargs.get('temporalAvgFrameSpan', temporalAvgFrameSpan)
     t_temporalAvg = kwargs.get('t_temporalAvg', t_temporalAvg)
+    temporalAvgFrameSpan = kwargs.get('temporalAvgFrameSpan', temporalAvgFrameSpan)
 
     # get time array
     t = getTimeVec(imgSeries.shape[2], **kwargs)

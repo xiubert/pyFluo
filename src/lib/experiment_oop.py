@@ -117,21 +117,23 @@ class Experiment:
         fig.show()
     
     def plot_experiment_overview(self, **kwargs):
+        t_base = kwargs.get('t_base', self.t_base)
+        t_resp = kwargs.get('t_resp', self.t_resp)
         # in case ExperimentGroup df was filtered:
         if self.parent is not None:
             qFiles = self.parent.df[self.parent.df['dir'] == self.directory]['qcam'].tolist()
         else:
             qFiles = self.df['qcam'].tolist()
          
-        plotting.experimentAvgPlot(qFiles=qFiles,**kwargs)
+        plotting.experimentAvgPlot(qFiles=qFiles, t_baseline=t_base, t_temporalAvg=t_resp, **kwargs)
 
     def plot_experiment_segments(self, n_segments, **kwargs):
         colors = cm.coolwarm(np.linspace(0, 1, n_segments))
 
         df_plot = self.df
-        t = signalProcess.getTimeVec(df_plot.iloc[0]['nFrames'])
+        t = signalProcess.getTimeVec(df_plot.iloc[0]['nFrames'], **kwargs)
         df_plot['rawF'] = df_plot['qcam'].apply(lambda x: self.qcam2img[x].mean(axis=(0,1)))
-        df_plot['F_linFilt'] = df_plot.apply(lambda x: signalProcess.subtractLinFit(t,x['rawF'], offset=False)[0],axis=1)
+        df_plot['F_linFilt'] = df_plot.apply(lambda x: signalProcess.subtractLinFit(t, x['rawF'], offset=False)[0], axis=1)
 
         for d, df_dir in df_plot.groupby('dir'):
 
@@ -191,22 +193,25 @@ class Experiment:
 
     
     def plotDF_levelByTreatment(self, **kwargs):
+        t_base = kwargs.get('t_base', self.t_base)
         # in case ExperimentGroup df was filtered:
         if self.parent is not None:
             df_plot = self.parent.df[self.parent.df['dir'] == self.directory]
         else:
             df_plot = self.df
             
-        plotting.plotDF_levelByTreatment(df_plot,self.qcam2img,**kwargs)
+        plotting.plotDF_levelByTreatment(df_plot,self.qcam2img, t_base=t_base, **kwargs)
 
 
     def plot_respHeatmap(self, **kwargs):
         t_base = kwargs.get('t_base', self.t_base)
         t_resp = kwargs.get('t_resp', self.t_resp)
-        plotting.plot_respHeatmap(self.df,  t_baseline = t_base, t_temporalAvg = t_resp, **kwargs)
+        plotting.plot_respHeatmap(self.df, t_baseline=t_base, t_temporalAvg=t_resp, **kwargs)
 
 
     def get_ROI_mask(self, condition: str = None, **kwargs):
+        t_base = kwargs.get('t_base', self.t_base)
+        t_resp = kwargs.get('t_resp', self.t_resp)
         if condition:
             qcams = self.df.loc[self.df['treatment'].str.startswith(condition),'qcam'].tolist()
             avgImgSeries = np.array(itemgetter(*qcams)(self.qcam2img)).mean(axis=0)
@@ -215,8 +220,8 @@ class Experiment:
             avgImgSeries = np.array(list(self.qcam2img.values())).mean(axis=0)
             saveName = "response_mask"
 
-        spatialDFF = imgProcess.calcSpatialDFFresp(avgImgSeries, **kwargs)
-        ui, mask_output = imgProcess.getROImaskUI(spatialDFF, expDir = self.directory, saveName=saveName, **kwargs)
+        spatialDFF = imgProcess.calcSpatialDFFresp(avgImgSeries, t_baseline=t_base, t_temporalAvg=t_resp, **kwargs)
+        ui, mask_output = imgProcess.getROImaskUI(spatialDFF, expDir=self.directory, saveName=saveName, **kwargs)
         
         return ui, mask_output, avgImgSeries, spatialDFF
 

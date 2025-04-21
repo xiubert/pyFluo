@@ -47,6 +47,13 @@ def plotTraceAvgImg(t,img,cutoff_freq: float = 3):
 def experimentAvgPlot(dPath: str = None, qFiles: list = None,
                       suptitle: str = None, avgFperTrace: bool = True,
                       **kwargs):
+    
+    # Optionally override parameters using kwargs
+    dPath = kwargs.get('dPath',dPath)
+    qFiles = kwargs.get('qFiles',qFiles)
+    suptitle = kwargs.get('suptitle',suptitle)
+    avgFperTrace = kwargs.get('avgFperTrace',avgFperTrace)
+    
     if qFiles is None:
         qFiles = glob(os.path.join(dPath,'*.qcamraw'))
 
@@ -68,8 +75,7 @@ def experimentAvgPlot(dPath: str = None, qFiles: list = None,
     ax[0].set_xlabel('t (s)')
     ax[0].set_xticks(np.arange(0,int(max(t))+1))
 
-    ax[1].imshow(imgProcess.calcSpatialDFFresp(np.array(imgs).mean(axis=0).reshape(*imgs[0].shape),
-                                    **kwargs), cmap='jet')
+    ax[1].imshow(imgProcess.calcSpatialDFFresp(np.array(imgs).mean(axis=0).reshape(*imgs[0].shape), **kwargs), cmap='jet')
 
     # Format the x-axis to show readable datetime labels
     # ax[1].gcf().autofmt_xdate()
@@ -85,6 +91,7 @@ def experimentAvgPlot(dPath: str = None, qFiles: list = None,
 
 
 def plot_respHeatmap(df: pd.DataFrame, dB_plot: int = 80, same_scale: bool = True, 
+                     contrast_percentile: tuple[float, float] = None, 
                      ROIcontour: np.ndarray | dict[str, np.ndarray] | None = None, **kwargs):
     """
     Plot baseline gray-scaled wide-field images and response heatmaps for each treatment.
@@ -94,11 +101,16 @@ def plot_respHeatmap(df: pd.DataFrame, dB_plot: int = 80, same_scale: bool = Tru
         df (pd.DataFrame): Metadata dataframe including columns: 'qcam', 'dB', and 'treatment'.
         dB_plot (int, optional): Sound intensity (in dB) to plot response heatmaps. Defaults to 80.
                                  If None, plot average across all intensities.
-        ROIcontour (dict, optional): ROI's vertex coordinates, including a repeated first vertex to close the shape.
-                                     Either: - 2D numpy array (same ROI for all treatments).
-                                             - Dictionary mapping treatments to 2D arrays (different ROIs for each treatment).
-                                             - None (no contours shown).
         same_scale (bool, optional): If 'True', use same color scaling in all heatmaps.
+        contrast_percentile (tuple, optional): (Lower, upper) percentile range of the color scale that the heatmap is focusing on.
+                                               Improve visibility of mid-range responses by preventing extreme values from compressing the color range.
+                                               - Example: (0.1, 99.9) clips the color scale to exclude the darkest 0.1% and brightest 0.1% of pixels.
+                                               - If None, use min/max scaling (may reduce contrast if outliers exist).
+                                               Defaults to None.
+        ROIcontour (dict, optional): ROI's vertex coordinates, including a repeated first vertex to close the shape.
+                                Either: - 2D numpy array (same ROI for all treatments).
+                                        - Dictionary mapping treatments to 2D arrays (different ROIs for each treatment).
+                                        - None (no contours shown).
         **kwargs: Optional arguments that will override default.
             examples: t_baseline (tuple): start and end time points (inclusive) of baseline to plot wide-field images.
                       t_temporalAvg (tuple): start and end time points (inclusive) of response to plot response heatmaps.
@@ -133,7 +145,11 @@ def plot_respHeatmap(df: pd.DataFrame, dB_plot: int = 80, same_scale: bool = Tru
                     else df_group[df_group['dB'] == dB_plot]['qcam'].tolist())
             _, _, _, spatialDFF = imgProcess.qcams2roiTrace(qcams, **kwargs)
             all_spatialDFF.append(spatialDFF)
-        dFF_min, dFF_max = min(dFF.min() for dFF in all_spatialDFF), max(dFF.max() for dFF in all_spatialDFF)
+
+        # Use percentiles for contrast enhancement if specified
+        all_values = np.concatenate([dFF.flatten() for dFF in all_spatialDFF])
+        dFF_min, dFF_max = np.percentile(all_values, contrast_percentile) if contrast_percentile else \
+                           (min(dFF.min() for dFF in all_spatialDFF), max(dFF.max() for dFF in all_spatialDFF))
 
     # Plot baseline gray-scaled wide-field images and response heatmaps for each treatment
     for i, treatment in enumerate(treatments):
@@ -143,9 +159,14 @@ def plot_respHeatmap(df: pd.DataFrame, dB_plot: int = 80, same_scale: bool = Tru
         # Calculate spatial dFF for response heatmap
         _, _, imgs, spatialDFF = imgProcess.qcams2roiTrace(qcams, **kwargs)
 
+        # Determine heatmap color scaling
+        if same_scale:
+            vmin, vmax = dFF_min, dFF_max
+        else:
+            vmin, vmax = np.percentile(spatialDFF, contrast_percentile) if contrast_percentile else (None, None)
+        
         # Plot images with labels/titles and colorbars
         ax[i,0].imshow(imgs.mean(axis=(0,-1)), 'gray')
-        vmin, vmax = (dFF_min, dFF_max) if same_scale else (None, None)
         respHeat = ax[i,1].imshow(spatialDFF, cmap='jet', vmin=vmin, vmax=vmax)
         ax[i,0].set_ylabel(treatment, rotation=0, ha='right', va='center', fontsize=14)
         if i == 0:
