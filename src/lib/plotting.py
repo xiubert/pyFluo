@@ -729,12 +729,18 @@ def barplot_avgDFF_singleDB(df: pd.DataFrame,
     return df_stats
 
 
-def plot_avgDFF_acrossAnimal(df: pd.DataFrame, measure_col: str = 'dB', resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak', 
-                             avgAnimal: bool = True, normalize: str = None, SEMbar: bool = True, 
-                             lineplot: bool = True, **kwargs) -> pd.DataFrame:
+def plot_avgDFF_acrossAnimal(df: pd.DataFrame, 
+                             measure_col: str = 'dB', 
+                             resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak', 
+                             avgAnimal: bool = True, 
+                             normalize: str = None, 
+                             SEMbar: bool = True, 
+                             plotAvg_reLevel: str = 'line', 
+                             **kwargs) -> pd.DataFrame:
     """
     Plot barplots or lineplots with error bars for fluorescence peak response averaged across animals re sound intensities.
     Create a new dataframe including the mean, SD, and SEM of peak response for each sound level.
+    Optionally export the dataframe as an excel file.
 
     Args:
         df (pd.DataFrame): Metadata dataframe including columns: 'dir', 'treatment', 'dB', and column for the response variable.
@@ -748,14 +754,16 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame, measure_col: str = 'dB', resp_col
                                     - 'False': Average in one step:
                                                Average peak responses of all individual trials from all animals.
                                                Error bars represent SEM or SD across trials.
-                                    Defaults to 'True'.
         normalize (str, optional): Whether to normalize peak response to the max response (in percentage). 
                                    - 'byGroup': For each animal, calculate the mean for each sound level, then normalize these means to the max mean.
                                                 Only applicable when 'avgAnimal' is 'True'.
                                    - 'byTrial': For each animal, normalize all individual trials to the trial with the max response.
                                    - None: No normalization is applied.
         SEMbar (bool, optional): If 'True', use standard error (SEM) for error bars. If 'False', use standard deviation (SD).
-        lineplot (bool, optional): If 'False', plot barplots instead of the lineplot. Defaults to 'True'.
+        plotAvg_reLevel (str, optional): Whether to plot averaged response across animals re sound level.
+                                         - 'line': Plot treatments in different colors in one lineplot.
+                                         - 'bar': Plot treatments in multiple barplots sharing the same Y-axis scale.
+                                         - None: Only return the statistics dataframe.
         **kwargs: Optional arguments that will override default.
             example: capsize (float, optional): Error bar cap size. Defaults to no caps.
 
@@ -824,7 +832,7 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame, measure_col: str = 'dB', resp_col
     # Otherwise, x-ticks cannot match 'dB' values in the correct order
     df_avg = pd.concat([group.sort_values(by=measure_col) for _, group in df_avg.groupby('treatment', sort=False)]).reset_index(drop=True)
 
-    if lineplot:
+    if plotAvg_reLevel == 'line':
         # Plot lineplot
         plt.figure(figsize=(8,6))
         for treatment, group in df_avg.groupby('treatment', sort=False):
@@ -837,7 +845,7 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame, measure_col: str = 'dB', resp_col
         plt.title("Response by Sound Intensity and Treatment")
         plt.show()
 
-    else:
+    elif plotAvg_reLevel == 'bar':
         # Plot barplots
         g = sns.FacetGrid(df_avg, col='treatment', sharey=True, height=4)
 
