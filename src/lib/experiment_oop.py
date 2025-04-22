@@ -238,6 +238,11 @@ class Experiment:
             axi.plot(mask_output['ROIcontour'][:,0],mask_output['ROIcontour'][:,1],'w-',linewidth=2)
 
 
+    def plot_avgDFF(self, measure_col='dB', resp_col="dFF_ROI_linFilt_butterFilt_peak", avgAnimal=False, normalize=None, **kwargs):
+        capsize = kwargs.get('capsize', 3)
+        return plotting.plot_avgDFF_acrossAnimal(self.df, measure_col=measure_col, resp_col=resp_col, 
+                                                 avgAnimal=avgAnimal, normalize=normalize, capsize=capsize, **kwargs)
+
 
 
 class ExperimentGroup:
