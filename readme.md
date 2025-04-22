@@ -20,7 +20,17 @@
 - Notebook: `src/getExprmntMetadata.ipynb`
 
 ## Plotting mean fluorescence within selectable ROI across traces
-- Notebook: `src/getROI_fluoResp.ipynb`
+- Notebook: `src/avg_ROI_response.ipynb`
+
+## Viewing fluorescence response within series of consecutively moving ROIs
+- Notebook: `src/series_moving_ROI_response.ipynb`
+
+## Analyzing fluorescence response re sound intensity for single animal
+- Notebook: `src/analysis_singleAnimal.ipynb`
+- Notebook: `src/analysis_singleAnimal_oop.ipynb`
+
+## Analyzing fluorescence response re sound intensity across animals
+- Notebook: `src/analysis_acrossAnimal.ipynb`
 
 ## Relating blood vessel movement with fluorescence responses
 - Notebook: `src/FandXY_reSoundStim.ipynb`
@@ -34,3 +44,5 @@
 ## Considering less biased approaches to selecting response areas / ROIs
 - Notebook: `src/unbiasedROI.ipynb`
 
+## Hierarchical clustering of fluorescence traces within sweeping ROIs
+- Notebook: `src/cluster_ROI.ipynb`
