@@ -11,12 +11,14 @@ scratch/
 /src/lib/old/
 /src/scratch
 /src/scratch_*
+/src/old
 
 #data
 # data/
 data/*/*.joblib
 data/*.joblib
 data/cache/*
+/src/cache
 
 # venvs
 venv*/
