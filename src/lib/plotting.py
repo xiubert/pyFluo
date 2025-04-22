@@ -16,6 +16,7 @@ import os
 from glob import glob
 from operator import itemgetter
 import warnings
+import math
 
 import lib.signalProcess as signalProcess
 import lib.fileIngest as fileIngest
@@ -932,8 +933,11 @@ def plotDFFSeriesMask(imgSeries: np.ndarray,
                       width: float, height: float, 
                       Xshift_step: float = 3, 
                       Yshift_step: float = 2, 
+                      shift_direct: float = None, 
                       dFResp: bool = False, 
                       displayContour: bool = True, 
+                      baseline: bool = True, 
+                      stimStart: float = 3.0, 
                       Yaxis_range: tuple[float,float] = None, 
                       Xshift_Num: int = None, 
                       Yshift_Num: int = None, 
@@ -952,8 +956,19 @@ def plotDFFSeriesMask(imgSeries: np.ndarray,
         height (float): Distance between top and bottom sides of the binary mask.
         Xshift_step (float, optional): Step size along the X-axis. 
         Yshift_step (float, optional): Step size along the Y-axis.
+        shift_direct (float, optional): Angle (in degrees) that determines mask movement direction relative to the axis.
+                                        - `None`: X-slider moves the mask horizontally (along X-axis) and Y-slider moves it vertically (along Y-axis).
+                                        - Positive angles: Moving either slider shifts the mask diagonally in specified direction (clockwise rotation from X-axis).
+                                        - Negative angles: Same as positive but counter-clockwise rotation.
+                                        - 0 degree: Equivalent to `None` (pure X/Y axis movement).
+                                        Defaults to `None`.
         dFResp (bool, optional): Whether to calculate dF (`True`) or dFF (`False`).
         displayContour (bool, optional): Whether to show mask as contour (`True`) or shaded region (`False`).
+        baseline (bool, optional): Whether to move the mask on a spatial baseline fluorescence heatmap.
+                                   - `True`: Background heatmap indicates spatial baseline fluorescence.
+                                   - `False`: Background heatmap indicates spatial dFF response.
+                                   Defaults to `True`.
+        stimStart (float, optional): Stimulus start time (in seconds). Defaults to 3.0.
         Yaxis_range (tuple, optional): Set fixed Y-axis range as (y_min, y_max). If None, Y-axis is auto-scaled.
         Xshift_Num (int, optional): Number of steps along the X-axis for GIF movement.
         Yshift_Num (int, optional): Number of steps along the Y-axis for GIF movement.
@@ -968,13 +983,16 @@ def plotDFFSeriesMask(imgSeries: np.ndarray,
         - Arguments `Xshift_Num`, `Yshift_Num`, `gif_frameDur`, `gif_name` are only necessary while generating and saving the GIF.
         - `Xshift_Num` and `Yshift_Num` must be positive, 0, or None. If both positive, they must be equal.
         - Move the mask in any directions in GIF by changing the ratio `Xshift_step / Yshift_step`.
-
     """
 
     # Raise error for image signal of improper dimensions
     if imgSeries.ndim not in (3, 4):
         raise ValueError("Image signal array must be 3D or 4D.")
 
+    # Raise error for invalid shifting directions
+    if not (-90 < shift_direct < 90):
+        raise ValueError("`shift_direct` must be between -90 and 90 degrees.")
+    
     # Create the time vector
     t = signalProcess.getTimeVec(imgSeries.shape[-1], **kwargs)
 
@@ -1012,14 +1030,17 @@ def plotDFFSeriesMask(imgSeries: np.ndarray,
         line, = ax_curve.plot(t, dFF_init, lw=2)
         semBar = ax_curve.fill_between(t, dFFpsem_init, dFFmsem_init, color='r', alpha=0.2) if imgSeries.ndim == 4 else None
         ax_curve.set_ylabel('Fluorescence Intensity (dFF)')
+    
     ax_curve.set_xlabel('Time (s)')
     ax_curve.set_title('Fluorescence Traces: Position Slider')
+    ax_curve.axvline(x=stimStart, color='k', linestyle='--')
 
     # Transform signal array into 3D if it is initially 4D
     avgImg_map = imgSeries.mean(axis=0) if imgSeries.ndim == 4 else imgSeries
 
-    # Load heatmap of baseline fluorescence as static background
-    ax_img.imshow(imgProcess.calcSpatialBaseFluo(avgImg_map, **kwargs), cmap='jet')
+    # Load heatmap of baseline or dFF response fluorescence as static background
+    ax_img.imshow(imgProcess.calcSpatialBaseFluo(avgImg_map, **kwargs) if baseline 
+                  else imgProcess.calcSpatialDFFresp(avgImg_map, **kwargs), cmap='jet')
 
     # Show initial mask overlay against baseline heatmap
     if displayContour:
@@ -1044,7 +1065,11 @@ def plotDFFSeriesMask(imgSeries: np.ndarray,
         nonlocal semBar, mask_overlay
 
         # Generate new binary masks with current slider values
-        mask = imgProcess.getSquareMask(X_slider.val, Y_slider.val, width, height, **kwargs)
+        # Move the mask diagonally if specified 
+        tan_theta_shift = math.tan(math.radians(shift_direct)) if shift_direct is not None else 0
+        Xcoor_new = X_slider.val - (Y_slider.val - Ycoor) * tan_theta_shift
+        Ycoor_new = Y_slider.val + (X_slider.val - Xcoor) * tan_theta_shift
+        mask = imgProcess.getSquareMask(Xcoor_new, Ycoor_new, width, height, **kwargs)
         
         # Ensure contour does not exceed image boundaries
         if np.any(mask['ROIcontour'][:,0] < 0) or np.any(mask['ROIcontour'][:,0] > imgSeries.shape[-2]):
