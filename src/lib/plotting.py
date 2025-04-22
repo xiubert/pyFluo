@@ -192,32 +192,75 @@ def plot_traces(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF_ROI_ra
     # Filter the DataFrame for the specified sound intensity
     filtered_df = df[df['dB'] == dB_plot].reset_index(drop=True)
     
-    # Get time vector
+    # Get time vectors
     if 'time' in filtered_df.columns:
-        time = filtered_df['time'].iloc[0]
+        time_vectors = filtered_df['time'].tolist()
     elif 'nFrames' in filtered_df.columns:
-        time = signalProcess.getTimeVec(filtered_df['nFrames'].iloc[0], **kwargs)
+        time_vectors = [signalProcess.getTimeVec(nFrames, **kwargs) for nFrames in filtered_df['nFrames']]
     else:
-        raise ValueError("Cannot access time vector. Neither 'time' nor 'nFrames' column found in dataframe.")
+        raise ValueError("Cannot access time vector. Neither 'time' nor 'nFrames' column exist in dataframe.")
+
+    # Ensure sound stimuli start at the same time for all traces
+    if 'baseWindow' not in filtered_df.columns and 'respWindow' not in filtered_df.columns:
+        if pd.Series([len(time_vector) for time_vector in time_vectors]).nunique() > 1:
+            # Raise error when traces have more than one length and cannot be aligned according to time window
+            raise ValueError("Traces have different lengths. Unable to align them based on baseline or response time windows.")
+    else:
+        # Align traces based on time windows if multiple trace lengths exist
+        windows = filtered_df['baseWindow'].tolist() if 'baseWindow' in filtered_df.columns else filtered_df['respWindow'].tolist()
+        # Set the latest time window as reference (to avoid negative values in time vectors)
+        ref_window = max(windows, key=lambda x: x[0])    # With the latest start time
+        for i, (window, time_vector) in enumerate(zip(windows, time_vectors)):
+            if window != ref_window:
+                shift = window[0] - ref_window[0]
+                # Shift the time vector
+                time_vectors[i] = time_vector - shift
+    
+    # Determine the full time range of time vectors after alignment
+    min_time = 0    # Bacause reference time vector starts at 0, and all time vectors are non-negative after alignment
+    max_time = max(max(time_vector) for time_vector in time_vectors)
+
+    # Pad the time vector and traces to match the full time range
+    padded_traces = []
+    for time_vector, trace in zip(time_vectors, filtered_df[resp_col]):
+        # Calculate padding needed at beginning and end
+        start_pad = int((min(time_vector) - min_time) / np.mean(np.diff(time_vector)))
+        end_pad = int((max_time - max(time_vector)) / np.mean(np.diff(time_vector)))
+        
+        # Pad the trace with NaNs
+        padded_trace = np.pad(trace, (start_pad, end_pad), mode='constant', constant_values=np.nan)
+        
+        # Pad the time vector
+        padded_time = np.pad(time_vector, (start_pad, end_pad), mode='constant', constant_values=np.nan)
+        
+        padded_traces.append((padded_time, padded_trace))
+    
+    # Update time_vectors and traces with paddings
+    time_vectors = [arr[0] for arr in padded_traces]
+    responses = [arr[1] for arr in padded_traces]
 
     # Extract traces for each treatment
     traces = {}
     treatments = filtered_df['treatment'].unique()
     for treatment in treatments:
-        treatment_df = filtered_df[filtered_df['treatment'] == treatment]
+        treatment_mask = filtered_df['treatment'] == treatment
+        treatment_responses = [responses[i] for i in range(len(responses)) if treatment_mask[i]]
         traces[treatment] = {
-            'individual': np.array(list(treatment_df[resp_col])).T,
-            'averaged': np.mean(np.array(list(treatment_df[resp_col])).T, axis=1)
+            'individual': np.array(treatment_responses).T,
+            'averaged': np.nanmean(np.array(treatment_responses).T, axis=1)
         }
     
     # Create the figure and axes
     if sepPlot:
-        fig, ax = plt.subplots(len(treatments), 1, figsize=(10, 4 * len(treatments)))
+        fig, ax = plt.subplots(len(treatments), 1, figsize=(10, 4 * len(treatments)), sharex=True)
         if len(treatments) == 1:
             ax = [ax]  # Ensure ax is always a list for consistency
     else:
         fig, ax = plt.subplots(figsize=(10, 4))
         ax = [ax]  # Ensure ax is a list for consistency
+    
+    # Use the first time vector (all should be the same after padding)
+    time = time_vectors[0]
     
     # Plot the traces
     for i, treatment in enumerate(treatments):
@@ -252,8 +295,9 @@ def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict = None, resp_col: s
     Plot fluorescence response (dFF or dF) traces by treatment and dB.
 
     Args:
-        df (pd.DataFrame): Metadata dataframe including columns `dB` and `treatment`.
-        resp_col (str, optional): Column name for response traces. Defaults to `dFF_ROI_raw`.
+        df (pd.DataFrame): Metadata dataframe including columns `dB` and `treatment`, and either column `qcam` or specified `resp_col`.
+        qcam2img (dict, optional): Dictionary mapping each qcam file path to its corresponding image data. Defaults to None.
+        resp_col (str, optional): Column name for response traces. Defaults to None.
         dFResp (bool, optional): If true, calculate dF response rather than dFF.
         sepPlot (bool, optional): Whether to create separate subplots for each treatment.
                                   - `True`: For each subplot, lower dBs are in cooler colors and higher dBs are in warmer colors.
@@ -261,13 +305,29 @@ def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict = None, resp_col: s
                                              with lower dBs in lighter colors and higher dBs in darker colors.
         errBar (bool, optional): If true, add error bars to curves.
         **kwargs: Optional keyword arguments.
-            example: qcam2img (dict): Dictionary mapping each qcam file path to its corresponding image data.
-                     roi_mask (np.ndarray): 2D binary mask array specifying the region of interest.
+            example: roi_mask (np.ndarray): 2D binary mask array specifying the region of interest.
                      t_base (tuple): Time window (in seconds) for baseline.
 
     Notes:
-        - kwargs `qcam2img`, `roi_mask` and `t_base` are required only when `resp_col` is None or does not exist.
+        - If `resp_col` is specified, traces are extracted directly from the dataframe rather than `qcam2img`.
+        - If `resp_col` is None, `qcam2img` must be provided.
     """
+    # Check whether either 'qcam2img' or 'resp_col' is provided
+    if qcam2img is None and resp_col is None:
+        raise ValueError("Either 'qcam2img' or 'resp_col' must be provided.")
+
+    # Check whether column 'resp_col' exists in the dataframe if provided
+    if resp_col is not None and resp_col not in df.columns:
+        raise ValueError(f"DataFrame must contain column: {resp_col}")
+    
+    if resp_col is None:
+        # Check whether column 'qcam' exists in the dataframe if 'resp_col' is not provided
+        if 'qcam' not in df.columns:
+            raise ValueError("DataFrame must contain column 'qcam' when resp_col is None.")
+        # Check for missing qcam keys in 'qcam2img'
+        missing_qcams = set(df['qcam']) - set(qcam2img.keys())
+        if missing_qcams:
+            raise ValueError(f"qcam2img missing keys: {missing_qcams}")
 
     # Sort dataframe by treatment (consistent with initial order) and dB (in ascending order)
     df_sorted = pd.concat([group.sort_values(by='dB') for _, group in df.groupby('treatment', sort=False)])
@@ -294,10 +354,10 @@ def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict = None, resp_col: s
 
     # Calculate fluorescence response within each treatment/dB combination
     for (treatment, dB), df_group in df_sorted.groupby(['treatment', 'dB'], sort=False):
-        if resp_col and resp_col in df_group.columns:
+        if resp_col is not None:
             response = np.vstack(df_group[resp_col])
         else:
-            # If column 'resp_col' does not exist, extract image data from qcam files
+            # If 'resp_col' is not given, extract image data from qcam files
             imgSeries = np.array(itemgetter(*df_group['qcam'])(qcam2img))  # Shape: [trace, Y, X, frame]
             roi_mask = kwargs.get('roi_mask', np.ones(imgSeries.shape[1:3]))
             signal = imgSeries[:, roi_mask == 1, :].mean(axis=1)
@@ -442,7 +502,7 @@ def plotTrace_reAnimal(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF
     plot_data = {}
 
     # Determine the full time range of time vectors after alignment
-    min_time = 0    # Bacause time vectors start at 0, and are all non-negative after alignment
+    min_time = 0    # Bacause reference time vector starts at 0, and all time vectors are non-negative after alignment
     max_time = max(max(time_vector) for time_vector in time_vectors)
 
     # Group by animal and treatment
@@ -454,7 +514,7 @@ def plotTrace_reAnimal(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF
         # Pad the time vector and traces to match the full time range
         if min(time_vector) > min_time:
             # Pad at the beginning
-            padding_length = int((min(time_vector) - min_time) / np.diff(time_vector)[0])
+            padding_length = int((min(time_vector) - min_time) / np.mean(np.diff(time_vector)))
             mean = np.pad(mean, (padding_length, 0), constant_values=np.nan)
             upper = np.pad(upper, (padding_length, 0), constant_values=np.nan)
             lower = np.pad(lower, (padding_length, 0), constant_values=np.nan)
@@ -462,7 +522,7 @@ def plotTrace_reAnimal(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF
 
         if max(time_vector) < max_time:
             # Pad at the end
-            padding_length = int((max_time - max(time_vector)) / np.diff(time_vector)[0])
+            padding_length = int((max_time - max(time_vector)) / np.mean(np.diff(time_vector)))
             mean = np.pad(mean, (0, padding_length), constant_values=np.nan)
             upper = np.pad(upper, (0, padding_length), constant_values=np.nan)
             lower = np.pad(lower, (0, padding_length), constant_values=np.nan)

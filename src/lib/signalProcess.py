@@ -590,7 +590,7 @@ def updateTable_signal(df: pd.DataFrame, qcam2img: dict, mask_name: str = 'respo
         warnings.warn("Traces have more than one frame count. Ensure time windows are adjusted.")
 
     # Add baseline and response time windows
-    # Adjust windows automatically according to 'STIMULUS_START_*_sec*' files
+    # Adjust windows automatically according to XSG files or 'STIMULUS_START_*_sec*' files
     df_updated['baseWindow'] = metadataProcess.getBaseRespWindow(df_updated, t_base=t_base, t_resp=t_resp, **kwargs)['baseWindow']
     df_updated['respWindow'] = metadataProcess.getBaseRespWindow(df_updated, t_base=t_base, t_resp=t_resp, **kwargs)['respWindow']
 

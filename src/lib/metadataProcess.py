@@ -130,50 +130,91 @@ def getInjectionCond(df: pd.DataFrame) -> list:
     return treatment_labels
 
 
-def getBaseRespWindow(df: pd.DataFrame, t_base: tuple = (2.0, 3.0), t_resp: tuple = (3.3, 4.0), stimStart: float = 3.0) -> dict:
+def getBaseRespWindow(df: pd.DataFrame, t_base: tuple = (2.0, 3.0), t_resp: tuple = (3.3, 4.0), 
+                      byXSG: bool = False, stimStart: float = 3.0, **kwargs) -> dict:
     """
     Returns a dictionary containing two lists: 'baseWindow' and 'respWindow' for files (rows) in the DataFrame.
-    Adjust time windows automatically based on file 'STIMULUS_START_*_sec*' in the corresponding directory.
+    Adjust time windows automatically based on corresponding XSG files or file 'STIMULUS_START_*_sec*' in the same directory.
 
     Args:
-        df (pd.DataFrame): DataFrame containing file information, with column: 'dir' (experiment directory).
-        t_base (tuple, optional): Baseline time window.
-        t_resp (tuple, optional): Response time window.
+        df (pd.DataFrame): Dataframe containing either 'xsg' paths (when byXSG=True) or 'dir' paths.
+        t_base (tuple, optional): Baseline time window (in seconds).
+        t_resp (tuple, optional): Response time window (in seconds).
+        byXSG (bool, optional): Whether to adjust time windows according to XSG files.
+                                - 'True': Use delay information from camera pulse names in XSG files.
+                                - 'False': Use 'STIMULUS_START_*_sec*' file in the experiment directory.
+                                           If not found, directly use the time windows specified (assume no delay).
+                                Defaults to 'False'.
         stimStart (float, optional): Stimulus start time (in seconds) by default. Defaults to 3.0.
+        **kwargs: Optional arguments that will override default.
 
     Returns:
         time_windows (dict): A dictionary with keys 'baseWindow' and 'respWindow', each mapping to a list of tuples.
+
+    Notes:
+        - Argument 'stimStart' is required only when 'byXSG=False'.
     """
 
+    # Optionally override parameters using kwargs
+    t_base = kwargs.get('t_base', t_base)
+    t_resp = kwargs.get('t_resp', t_resp)
+    byXSG = kwargs.get('byXSG', byXSG)
+    stimStart = kwargs.get('stimStart', stimStart)
+    
+    # Check whether required columns exist
+    if byXSG and 'xsg' not in df.columns:
+        raise ValueError("DataFrame must contain 'xsg' column when byXSG=True")
+    if not byXSG and 'dir' not in df.columns:
+        raise ValueError("DataFrame must contain 'dir' column when byXSG=False")
+    
     # Initialize lists for baseline and response time windows
     base_windows = []
     resp_windows = []
+    
+    if byXSG:
+        # Process using XSG files
+        for xsgPath in df['xsg']:
+            try:
+                # Get camera pulse names from corresponding XSG files
+                camera_pulse = getPulseNames(xsgPath)[2]
+                # Extract delay time by recognizing strings '_*sec_delay'
+                # If not found, return 0 (no delay)
+                match = re.search(r'_(\d+)sec_delay', camera_pulse)
+                delay = int(match.group(1)) if match else 0
+                base_windows.append((t_base[0] - delay, t_base[1] - delay))
+                resp_windows.append((t_resp[0] - delay, t_resp[1] - delay))
+            except Exception as e:
+                raise ValueError(f"Error processing XSG file {xsgPath}: {str(e)}")
 
-    for _, row in df.iterrows():
-        # For each row, search for file indicating stimulus start time in corresponding experiment directory
-        # Filename example: 'STIMULUS_START_2_sec.txt'
-        stimulus_file = glob(os.path.join(row['dir'], 'STIMULUS_START_*_sec*'))
-        
-        if stimulus_file:
-            # If file exists, take the first matching file
-            fstart = stimulus_file[0]
-            match = re.search(r'START_([0-9]+)_sec', fstart)
-            if match:
-                # Extract stimulus start time
-                start_time = int(match.group(1))
-                # Adjust baseline and response time windows accordingly
-                base_window = tuple(x + (start_time-stimStart) for x in t_base)
-                resp_window = tuple(x + (start_time-stimStart) for x in t_resp)
-            else:
-                raise ValueError(f'Unable to parse stimulus start file: {fstart}')
-        else:
-            # If file not found, use default baseline and response time windows
-            base_window = t_base
-            resp_window = t_resp
+    else:
+        # Process using stimulus start files
+        for dir_path in df['dir']:
+            try:
+                # Filename example: 'STIMULUS_START_2_sec.txt'
+                stimulus_file_list = glob(os.path.join(dir_path, 'STIMULUS_START_*_sec*'))
+                if len(stimulus_file_list) > 1:
+                    raise ValueError(f"Multiple stimulus files found in directory {dir_path}: {stimulus_file_list}")
+                
+                # If no files found, assume no delay by default
+                delay = 0
+                
+                if stimulus_file_list:
+                    # Use the single stimulus file found
+                    stimulus_file = stimulus_file_list[0]
+                    match = re.search(r'START_(\d+)_sec', os.path.basename(stimulus_file))
+                    if not match:
+                        raise ValueError(f"Unable to parse stimulus time from file: {stimulus_file}")
+                    
+                    # Extract stimulus start time and compute delay time
+                    start_time = int(match.group(1))
+                    delay = stimStart - start_time
 
-        # Append time windows to their respective lists
-        base_windows.append(base_window)
-        resp_windows.append(resp_window)
+                # Adjust baseline and response time windows according to delay time
+                base_windows.append((t_base[0] - delay, t_base[1] - delay))
+                resp_windows.append((t_resp[0] - delay, t_resp[1] - delay))
+            
+            except Exception as e:
+                raise ValueError(f"Error processing directory {dir_path}: {str(e)}")
 
     # Creating a dictionary containing keys 'baseWindow' and 'respWindow'
     time_windows = {'baseWindow': base_windows, 'respWindow': resp_windows}

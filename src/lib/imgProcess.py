@@ -512,8 +512,10 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True,
             # Save the new mask
             try:
                 joblib.dump(mask_output['mask'], savePath)
-                joblib.dump(mask_output['ROIcontour'], savePath.replace('response_mask','response_mask_contour'))
                 print(f"Mask saved successfully to: {savePath}")
+                savePath_contour = savePath.replace('response_mask', 'response_mask_contour')
+                joblib.dump(mask_output['ROIcontour'], savePath_contour)
+                print(f"Contour saved successfully to: {savePath_contour}")
             except Exception as e:
                 print(f"Failed to save mask: {e}")
         else:
