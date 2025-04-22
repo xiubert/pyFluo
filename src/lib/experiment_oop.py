@@ -210,7 +210,7 @@ class Experiment:
 
 
     def get_ROI_mask(self, condition: str = None, **kwargs):
-        dB_plot = kwargs.get('dB_plot', 80)
+        dB_plot = kwargs.get('dB_plot', None)
         t_base = kwargs.get('t_base', self.t_base)
         t_resp = kwargs.get('t_resp', self.t_resp)
         if condition:
