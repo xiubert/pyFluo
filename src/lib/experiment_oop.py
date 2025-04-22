@@ -210,14 +210,18 @@ class Experiment:
 
 
     def get_ROI_mask(self, condition: str = None, **kwargs):
+        dB_plot = kwargs.get('dB_plot', 80)
         t_base = kwargs.get('t_base', self.t_base)
         t_resp = kwargs.get('t_resp', self.t_resp)
         if condition:
-            qcams = self.df.loc[self.df['treatment'].str.startswith(condition),'qcam'].tolist()
+            qcams = self.df.loc[self.df['treatment'].str.startswith(condition), 'qcam'].tolist() if dB_plot is None else \
+                    self.df.loc[(self.df['treatment'].str.startswith(condition)) & (self.df['dB']==dB_plot), 'qcam'].tolist()
             avgImgSeries = np.array(itemgetter(*qcams)(self.qcam2img)).mean(axis=0)
             saveName = f"response_mask_{condition}"
         else:
-            avgImgSeries = np.array(list(self.qcam2img.values())).mean(axis=0)
+            qcams = self.df.loc[:, 'qcam'].tolist() if dB_plot is None else \
+                    self.df.loc[self.df['dB']==dB_plot, 'qcam'].tolist()
+            avgImgSeries = np.array(itemgetter(*qcams)(self.qcam2img)).mean(axis=0)
             saveName = "response_mask"
 
         spatialDFF = imgProcess.calcSpatialDFFresp(avgImgSeries, t_baseline=t_base, t_temporalAvg=t_resp, **kwargs)
@@ -225,6 +229,7 @@ class Experiment:
         
         return ui, mask_output, avgImgSeries, spatialDFF
 
+    
     def plot_ROI_mask(self, mask_output, avgImgSeries, spatialDFF):
         _,ax = plt.subplots(1,2)
         ax[0].imshow(avgImgSeries.mean(axis=-1),cmap='gray')
@@ -232,6 +237,7 @@ class Experiment:
         for axi in ax:
             axi.plot(mask_output['ROIcontour'][:,0],mask_output['ROIcontour'][:,1],'w-',linewidth=2)
 
+    
     def plot_avgDFF(self, measure_col='dB', resp_col="dFF_ROI_linFilt_butterFilt_peak", avgAnimal=False, normalize=None, **kwargs):
         capsize = kwargs.get('capsize', 3)
         return plotting.plot_avgDFF_acrossAnimal(self.df, measure_col=measure_col, resp_col=resp_col, 
