@@ -131,7 +131,7 @@ def getInjectionCond(df: pd.DataFrame) -> list:
 
 
 def getBaseRespWindow(df: pd.DataFrame, t_base: tuple = (2.0, 3.0), t_resp: tuple = (3.3, 4.0), 
-                      byXSG: bool = True, stimStart: float = 3.0, **kwargs) -> dict:
+                      byXSG: bool = False, stimStart: float = 3.0, **kwargs) -> dict:
     """
     Returns a dictionary containing two lists: 'baseWindow' and 'respWindow' for files (rows) in the DataFrame.
     Adjust time windows automatically based on corresponding XSG files or file 'STIMULUS_START_*_sec*' in the same directory.
@@ -143,7 +143,8 @@ def getBaseRespWindow(df: pd.DataFrame, t_base: tuple = (2.0, 3.0), t_resp: tupl
         byXSG (bool, optional): Whether to adjust time windows according to XSG files.
                                 - 'True': Use delay information from camera pulse names in XSG files.
                                 - 'False': Use 'STIMULUS_START_*_sec*' file in the experiment directory.
-                                Defaults to 'True'.
+                                           If not found, directly use the time windows specified (assume no delay).
+                                Defaults to 'False'.
         stimStart (float, optional): Stimulus start time (in seconds) by default. Defaults to 3.0.
         **kwargs: Optional arguments that will override default.
 
