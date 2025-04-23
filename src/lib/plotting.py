@@ -48,6 +48,13 @@ def plotTraceAvgImg(t,img,cutoff_freq: float = 3):
 def experimentAvgPlot(dPath: str = None, qFiles: list = None,
                       suptitle: str = None, avgFperTrace: bool = True,
                       **kwargs):
+    
+    # Optionally override parameters using kwargs
+    dPath = kwargs.get('dPath',dPath)
+    qFiles = kwargs.get('qFiles',qFiles)
+    suptitle = kwargs.get('suptitle',suptitle)
+    avgFperTrace = kwargs.get('avgFperTrace',avgFperTrace)
+    
     if qFiles is None:
         qFiles = glob(os.path.join(dPath,'*.qcamraw'))
 
