@@ -313,7 +313,7 @@ def plot_traces(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF_ROI_ra
 
 
 def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict = None, resp_col: str = None, dFResp: bool = False, 
-                            sepPlot: bool = True, errBar: bool = True, **kwargs):
+                            sepPlot: bool = True, errBar: bool = True, Yaxis_range: tuple[float,float] = None, **kwargs):
     """
     Plot fluorescence response (dFF or dF) traces by treatment and dB.
 
@@ -327,6 +327,7 @@ def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict = None, resp_col: s
                                   - `False`: Treatments are distinguished by different color types, 
                                              with lower dBs in lighter colors and higher dBs in darker colors.
         errBar (bool, optional): If true, add error bars to curves.
+        Yaxis_range (tuple, optional): Set fixed Y-axis range as (y_min, y_max). If None, Y-axis is auto-scaled.
         **kwargs: Optional keyword arguments.
             example: roi_mask (np.ndarray): 2D binary mask array specifying the region of interest.
                      t_base (tuple): Time window (in seconds) for baseline.
@@ -335,6 +336,7 @@ def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict = None, resp_col: s
         - If `resp_col` is specified, traces are extracted directly from the dataframe rather than `qcam2img`.
         - If `resp_col` is None, `qcam2img` must be provided.
     """
+    
     # Check whether either 'qcam2img' or 'resp_col' is provided
     if qcam2img is None and resp_col is None:
         raise ValueError("Either 'qcam2img' or 'resp_col' must be provided.")
@@ -382,6 +384,8 @@ def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict = None, resp_col: s
         else:
             # If 'resp_col' is not given, extract image data from qcam files
             imgSeries = np.array(itemgetter(*df_group['qcam'])(qcam2img))  # Shape: [trace, Y, X, frame]
+            if imgSeries.ndim == 3:  # If only one trace, add a dimension
+                imgSeries = np.expand_dims(imgSeries, axis=0)
             roi_mask = kwargs.get('roi_mask', np.ones(imgSeries.shape[1:3]))
             signal = imgSeries[:, roi_mask == 1, :].mean(axis=1)
             dFF, dF, _ = signalProcess.dFFcalc(signal, **kwargs)
@@ -466,6 +470,14 @@ def plotDF_levelByTreatment(df: pd.DataFrame, qcam2img: dict = None, resp_col: s
             fig.update_xaxes(title_text="time (s)", row=i, col=1)
             fig.update_yaxes(title_text=("dF" if dFResp else "dFF"), row=i, col=1)
     
+    # Set Y-axis range if specified
+    if Yaxis_range is not None:
+        if sepPlot:
+            for i in range(1, len(treat_values) + 1):
+                fig.update_yaxes(range=Yaxis_range, row=i, col=1)
+        else:
+            fig.update_yaxes(range=Yaxis_range)
+
     fig.show()
 
 
@@ -1012,8 +1024,8 @@ def plotDFFSeriesMask(imgSeries: np.ndarray,
         raise ValueError("Image signal array must be 3D or 4D.")
 
     # Raise error for invalid shifting directions
-    if not (-90 < shift_direct < 90):
-        raise ValueError("`shift_direct` must be between -90 and 90 degrees.")
+    if shift_direct is not None and (shift_direct <= -90 or shift_direct >= 90):
+        raise ValueError("`shift_direct` must be between -90 and 90 degrees (exclusive).")
     
     # Create the time vector
     t = signalProcess.getTimeVec(imgSeries.shape[-1], **kwargs)

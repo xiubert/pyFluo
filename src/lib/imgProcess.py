@@ -336,10 +336,12 @@ def getSquareMask(Xcoor: float, Ycoor: float, width: float, height: float,
 
 def getROImaskUI(image: np.ndarray, show_mask: bool = True, 
                  expDir: str = None, saveName: str = "response_mask",
-                 existing_roi: np.ndarray = None, **kwargs):
+                 existing_roi: np.ndarray = None, 
+                 contrast_percentile: tuple[float, float] = None, 
+                 **kwargs):
     """
     Creates an interactive interface for defining a polygonal Region of Interest (ROI) on an image 
-    and generates a corresponding binary mask. Optionally saves the mask as a `joblib` file in the designated directory.
+    and generates a corresponding binary mask. Optionally saves the mask and the mask contour as `joblib` files in the designated directory.
 
     Args:
         image (numpy.ndarray): 2D array representing the input image on which the ROI is drawn.
@@ -348,11 +350,16 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True,
                                 - `None`: The binary mask cannot be saved. The `Save ROI mask` button is grey and cannot be clicked.
                                 Defaults to `None`.
         saveName (str, optional): Name of the saved `joblib` file.
-                                Defaults to `'response_mask'`.
+                                  Defaults to `'response_mask'`.
         existing_roi (numpy.ndarray, optional): Existing ROI coordinates to load initially.
-                                Should be an Nx2 array of (x,y) coordinates defining the polygon vertices.
-                                The coordinates should be in the same orientation as the displayed image.
-                                Defaults to `None`.
+                                                Should be an Nx2 array of (x,y) coordinates defining the polygon vertices.
+                                                The coordinates should be in the same orientation as the displayed image.
+                                                Defaults to `None`.
+        contrast_percentile (tuple, optional): (Lower, upper) percentile range of the color scale that the heatmap is focusing on.
+                                               Improve visibility of mid-range responses by preventing extreme values from compressing the color range.
+                                               - Example: (0.1, 99.9) clips the color scale to exclude the darkest 0.1% and brightest 0.1% of pixels.
+                                               - If None, use min/max scaling (may reduce contrast if outliers exist).
+                                               Defaults to None.
         **kwargs: Optional key word arguments.
 
     Returns:
@@ -366,16 +373,28 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True,
     expDir = kwargs.get('expDir', expDir)
     saveName = kwargs.get('saveName', saveName)
     existing_roi = kwargs.get('existing_roi', existing_roi)
+    contrast_percentile = kwargs.get('contrast_percentile', contrast_percentile)
 
     # for running in jupyter notebook
     pn.extension()
     hv.extension('bokeh')
 
     # Initialize Holoviews objects
-    image_hv = hv.Image(image, bounds=(0, 0, image.shape[1], image.shape[0])).opts(
+    if contrast_percentile is not None:
+        # Apply contrast enhancement by specified percentile range of the color scale
+        vmin, vmax = np.percentile(image, contrast_percentile)
+        display_image = np.clip((image - vmin) / (vmax - vmin), 0, 1)
+        clim = (0, 1)  # Set fixed color limits for normalized image
+    else:
+        # Auto-scale for original image
+        display_image = image.copy()
+        clim = None
+
+    image_hv = hv.Image(display_image, bounds=(0, 0, image.shape[1], image.shape[0])).opts(
         width=image.shape[1] * 3, 
-        height=image.shape[0] * 3,
-        cmap='jet',
+        height=image.shape[0] * 3, 
+        cmap='jet', 
+        clim=clim
     )
 
     # Create dictionary to store results
@@ -489,38 +508,53 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True,
     mask_button.on_click(get_coords)
 
     def save_mask(event):
-        if mask_output['mask'] is not None:
-            if expDir is not None:
-                savePath = os.path.join(expDir, f"{saveName}.joblib")
-                print(f"Save Path: {savePath}")
-            else:
-                print("Experiment directory not specified.")
-
-            # Backup existing file
-            if os.path.exists(savePath):
-                print("File existing in the same path.")
-                exist_files = glob(savePath.replace('.joblib', '_[0-9][0-9][0-9].joblib'))
-
-                seq_numbers = [
-                    int(match.group(1)) for f in exist_files if (match := re.search(r"_(\d{3})\.joblib$", f))
-                ]
-                seq_max = max(seq_numbers) if seq_numbers else 0
-
-                backupPath = savePath.replace('.joblib', f"_{seq_max + 1:03}.joblib")
-                os.rename(savePath, backupPath)
-                print(f"Existing files backed up to: {backupPath}")
-                         
-            # Save the new mask
-            try:
-                joblib.dump(mask_output['mask'], savePath)
-                print(f"Mask saved successfully to: {savePath}")
-                savePath_contour = savePath.replace('response_mask', 'response_mask_contour')
-                joblib.dump(mask_output['ROIcontour'], savePath_contour)
-                print(f"Contour saved successfully to: {savePath_contour}")
-            except Exception as e:
-                print(f"Failed to save mask: {e}")
-        else:
+        """Save both the mask and its contour with backup of existing files."""
+        if mask_output['mask'] is None:
             print("No mask to save.")
+            return
+        
+        if expDir is None:
+            print("Experiment directory not specified.")
+            return
+
+        # Prepare base paths
+        savePath = os.path.join(expDir, f"{saveName}.joblib")
+        savePath_contour = savePath.replace('response_mask', 'response_mask_contour')
+        print(f"Attempting to save to:\n- {savePath}\n- {savePath_contour}")
+
+        def backup_file(path):
+            """Handle backup of existing files with sequential numbering."""
+            if not os.path.exists(path):
+                return None
+
+            print(f"Existing file found: {path}")
+            exist_files = glob(path.replace('.joblib', '_[0-9][0-9][0-9].joblib'))
+
+            # Extract sequence numbers
+            seq_numbers = [
+                int(match.group(1)) for f in exist_files if (match := re.search(r"_(\d{3})\.joblib$", f))
+            ]
+            next_seq = max(seq_numbers) + 1 if seq_numbers else 1
+
+            backup_path = path.replace('.joblib', f"_{next_seq:03d}.joblib")
+            os.rename(path, backup_path)
+            print(f"Existing files backed up to: {backup_path}")
+            return backup_path
+        
+        # Backup and save both the mask and the mask contour
+        try:
+            # Backup existing files
+            backup_file(savePath)
+            backup_file(savePath_contour)
+
+            # Save new files
+            joblib.dump(mask_output['mask'], savePath)
+            joblib.dump(mask_output['ROIcontour'], savePath_contour)
+            
+            print(f"Successfully saved:\n- Mask: {savePath}\n- Contour: {savePath_contour}")
+        
+        except Exception as e:
+            print(f"Failed to save mask: {e}")
     
     # Button to save the mask
     save_button = pn.widgets.Button(name='Save ROI mask', button_type='success', disabled=(expDir is None))

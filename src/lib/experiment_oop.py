@@ -230,10 +230,12 @@ class Experiment:
         return ui, mask_output, avgImgSeries, spatialDFF
 
     
-    def plot_ROI_mask(self, mask_output, avgImgSeries, spatialDFF):
+    def plot_ROI_mask(self, mask_output, avgImgSeries, spatialDFF, 
+                      contrast_percentile: tuple[float, float] = None):
         _,ax = plt.subplots(1,2)
-        ax[0].imshow(avgImgSeries.mean(axis=-1),cmap='gray')
-        ax[1].imshow(spatialDFF,cmap='jet')
+        ax[0].imshow(avgImgSeries.mean(axis=-1), cmap='gray')
+        vmin, vmax = np.percentile(spatialDFF, contrast_percentile) if contrast_percentile else (None, None)
+        ax[1].imshow(spatialDFF, cmap='jet', vmin=vmin, vmax=vmax)
         for axi in ax:
             axi.plot(mask_output['ROIcontour'][:,0],mask_output['ROIcontour'][:,1],'w-',linewidth=2)
 
