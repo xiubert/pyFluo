@@ -388,7 +388,7 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True,
     else:
         # Auto-scale for original image
         display_image = image.copy()
-        clim = None
+        clim = (None, None)
 
     image_hv = hv.Image(display_image, bounds=(0, 0, image.shape[1], image.shape[0])).opts(
         width=image.shape[1] * 3, 
