@@ -58,6 +58,7 @@ def getPulseDB(pulse: str, format: str = 'MAK'):
         format (str, optional): The format of the pulse string. Default is 'MAK'.
                                 - 'MAK': Matches patterns like "_XXdB_YYYmsTotal_"
                                 - 'PAC': Matches patterns like "Hz_XXdB_TestTone_YYYmsPulse_"
+                                - 'SHY': Matches patterns like "Hz_XXdB_YYYmsPulse_"
                                 - Other formats return None.
 
     Returns:
@@ -69,12 +70,15 @@ def getPulseDB(pulse: str, format: str = 'MAK'):
     Notes:
         - For 'MAK' format, the regex pattern looks for "_XXdB_YYYmsTotal_".
         - For 'PAC' format, the regex pattern looks for "Hz_XXdB_TestTone_YYYmsPulse_".
+        - For 'SHY' format, the regex pattern looks for "Hz_XXdB_YYYmsPulse_".
         - Returns `None` if the format is not recognized or no match is found.
     """
     if format=='MAK':
         dBre = re.compile(r'_(\d{1,3})dB_\d{2,5}msTotal_')
     elif format=='PAC':
         dBre = re.compile(r'Hz_(\d{2,3})dB_TestTone_\d{2,5}msPulse_')
+    elif format=='SHY':
+        dBre = re.compile(r'Hz_(\d{1,3})dB_\d{2,5}msPulse_')
     else:
         return None
     try:
