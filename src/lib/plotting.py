@@ -4,12 +4,14 @@ import pandas as pd
 import colorsys
 import matplotlib.pyplot as plt
 import matplotlib.cm as cm
+import matplotlib.patches as mpatches
 from matplotlib.widgets import Slider, Button
 from matplotlib.animation import FuncAnimation, PillowWriter
 import plotly.express as px
 import plotly.graph_objs as go
 from plotly.subplots import make_subplots
 import seaborn as sns
+from scipy.cluster.hierarchy import dendrogram
 
 from datetime import datetime
 import os
@@ -1242,3 +1244,256 @@ def plotDFFSeriesMask(imgSeries: np.ndarray,
     # Automatically switch back to inline backend
     # Render the following plots as static images instead of interactive widgets
     # %matplotlib inline
+
+
+def plot_ROI_trace(roi_avg: np.ndarray, normalize: bool = True, plot_trace: bool = True, **kwargs) -> np.ndarray:
+    """
+    Plot fluorescence traces within a series of sweeping ROIs before and after subtracting linear fit.
+
+    Args:
+        roi_avg (np.ndarray): 2D or 3D array of ROI average fluorescence traces.
+                              Shape should be [maskNumber, frame] or [traceNumber, maskNumber, frame].
+        normalize (bool, optional): Whether to normalize each trace to the mean fluorescence over time.
+        plot_trace (bool, optional): Whether to plot traces before and after removal of linear fit.
+        **kwargs: Optional keyword arguments.
+
+    Returns:
+        roi_avg_filt (np.ndarray): ROI fluorescence traces after removal of linear fit (same shape as input array 'roi_avg').
+    """
+
+    # Check the dimension of input array
+    if roi_avg.ndim not in (2, 3):
+        raise ValueError("Trace array must be 2D or 3D.")
+    
+    # Get the time vector
+    t = signalProcess.getTimeVec(roi_avg.shape[-1], **kwargs)
+
+    # Filter to center around 0 fluorescence intensity
+    if not normalize:
+        # Directly subtract linear fit from the raw fluorescence traces
+        roi_avg_filt = signalProcess.subtractLinFit(t, roi_avg, offset=False)[0]
+
+    else:
+        # Normalize each trace to the mean fluorescence across all time frames
+        roi_avg_filt = signalProcess.subtractLinFit(t, roi_avg, offset=False)[0] / np.mean(roi_avg, axis=-1, keepdims=True)
+
+    if plot_trace:
+        fig, ax = plt.subplots(1, 2, figsize=(16,8))
+
+        if roi_avg.ndim == 2:
+            ax[0].plot(t, roi_avg.T)
+            ax[1].plot(t, roi_avg_filt.T)
+        else:
+            ax[0].plot(t, np.mean(roi_avg, axis=0).T)
+            ax[1].plot(t, np.mean(roi_avg_filt, axis=0).T)
+
+        ax[0].set_title('Raw Traces re ROIs', fontsize=14)
+        ax[0].set_ylabel('raw F', fontsize=12)
+        
+        if not normalize:
+            ax[1].set_title('Traces re ROIs After Subtracting Linear Fit', fontsize=14)
+            ax[1].set_ylabel('raw F - linear fit', fontsize=12)
+        else:
+            ax[1].set_title('Normalized Traces re ROIs After Subtracting Linear Fit', fontsize=14)
+            ax[1].set_ylabel('normalized F - linear fit', fontsize=12)
+
+        for axn in ax:
+            axn.set_xlabel('time (s)', fontsize=12)
+
+    return roi_avg_filt
+
+
+def plot_hierarchical_cluster(linkage_matrix: np.ndarray, 
+                              roi_trace: np.ndarray, 
+                              stimStart: float = 3.0, 
+                              **kwargs) -> tuple:
+    """
+    Visualizes hierarchical clustering results with dendrogram and sorted ROI traces.
+    
+    This function creates a two-panel figure showing:
+    1. A dendrogram displaying the hierarchical clustering structure.
+    2. A heatmap of ROI traces sorted by cluster similarity.
+    
+    Args:
+        linkage_matrix (np.ndarray): Hierarchical clustering linkage matrix of shape [maskNumber-1, 4].
+        roi_trace (np.ndarray): 2D or 3D array of ROI fluorescence traces.
+                                Shape should be [maskNumber, frame] or [traceNumber, maskNumber, frame].
+        stimStart (float, optional): Stimulus start time (in seconds). Defaults to 3.0.
+        **kwargs: Optional keyword arguments.
+            - Example: Additional arguments passed to dendrogram() such as:
+                       color_threshold (float, optional): Threshold for cluster coloring.
+                                                          Clusters with distance greater than the threshold are in different colors.
+                                                          eg. color_threshold=0.5, color_threshold=0.5*max(linkage_matrix[:,2]), etc.
+                                                          Defaults to '0.7*max(linkage_matrix[:,2])'.
+    
+    Returns:
+        tuple: Contains:
+               - color_map (dict): Mapping of cluster IDs to colors.
+               - leaves_color_list (np.ndarray): Color assignments for each leaf.
+               - leaf_order (np.ndarray): ROI indices in dendrogram order.
+    
+    Notes:
+        - Uses matplotlib's default color cycle for cluster coloring.
+    """
+    
+    # Check the shape of input array
+    if roi_trace.ndim not in (2, 3):
+        raise ValueError("Trace array must be 2D or 3D.")
+    
+    # Average across different trials (repetitions) for 3D array
+    roi_trace = np.mean(roi_trace, axis=0) if roi_trace.ndim == 3 else roi_trace
+    
+    # Get the time vector
+    t = signalProcess.getTimeVec(roi_trace.shape[-1], **kwargs)
+
+    # Generate the dendrogram without plotting to get metadata
+    dendro = dendrogram(linkage_matrix, no_plot=True, **kwargs)
+    
+    # Extract leaf order and colors
+    leaf_order = dendro['leaves']
+    leaves_color_list = dendro['leaves_color_list']
+    
+    # Get the default matplotlib color cycle
+    color_cycle = plt.rcParams['axes.prop_cycle'].by_key()['color']
+    
+    # Get the unique colors and create a cluster-to-color mapping
+    unique_colors = np.unique(leaves_color_list)
+
+    # Create a mapping from cluster number to color
+    color_map_legend = {i + 1: color for i, color in enumerate(unique_colors)}
+    color_map = {str(val):{'cluster_id':k, 'cluster_color':color_cycle[k]} for k,val in color_map_legend.items()}
+    
+    # Sort ROI traces by dendrogram order
+    sorted_roi_trace = roi_trace[leaf_order]
+    
+    # Create figure with subplots
+    fig, ax = plt.subplots(1, 2, figsize=(15, 5))
+    
+    # Plot dendrogram (left panel)
+    dendrogram(
+        linkage_matrix,
+        orientation='left',
+        leaf_font_size=5,
+        no_labels=True,
+        ax=ax[0], 
+        **kwargs
+    )
+    ax[0].set_title('Hierarchical Clustering Dendrogram', fontsize=14)
+    ax[0].set_xlabel('Distance', fontsize=12)
+    ax[0].set_ylabel('ROI Index', fontsize=12)
+    
+    # Add cluster legend
+    legend_handles = [mpatches.Patch(color=color_map_legend[i], 
+                                     label=f'Cluster {i}') for i in color_map_legend]
+    ax[0].legend(handles=legend_handles, loc='upper left', fontsize=12)
+    
+    # Plot sorted ROI responses (right panel)
+    roi_trace_img = ax[1].imshow(
+        sorted_roi_trace, 
+        aspect='auto', 
+        extent=[t[0], t[-1], 0, sorted_roi_trace.shape[0]], 
+        origin='lower', 
+        cmap='coolwarm'
+    )
+    
+    ax[1].axvline(x=stimStart, color='k', linestyle='--')
+    ax[1].set_title('ROI Sorted by Clustering Similarity', fontsize=14)
+    ax[1].set_xlabel('time (s)', fontsize=12)
+    ax[1].set_ylabel('ROI Index', fontsize=12)
+
+    # Add colorbar
+    colorbar = fig.colorbar(roi_trace_img, ax=ax[1])
+    colorbar.set_label('Fluorescence Intensity', fontsize=12)
+    # ax[0].legend([1,2,3],loc='upper left')
+    
+    return color_map, np.array(leaves_color_list), np.array(leaf_order)
+
+
+def plot_cluster_roi(img_series: np.ndarray, 
+                     masks: np.ndarray, 
+                     roi_trace: np.ndarray, 
+                     color_map: dict, 
+                     leaves_color_list: np.ndarray, 
+                     leaf_order: np.ndarray, 
+                     background_contrast: float = 0.2, 
+                     stimStart: float = 3, 
+                     Yaxis_range: tuple[float,float] = None, 
+                     plot_traces: bool = False, 
+                     plot_errBar: bool = False, 
+                     **kwargs):
+    """
+    Plot clustered ROIs and their corresponding fluorescence traces for each cluster.
+    
+    For each cluster, creates a two-panel figure showing:
+    1. Spatial map of ROIs belonging to each cluster overlaid on wide-field image.
+    2. The average fluorescence trace for ROIs in the corresponding cluster.
+
+    Args:
+        img_series (np.ndarray): 3D or 4D image array of shape [Y, X, frame] or [traceNumber, Y, X, frame].
+        masks (np.ndarray): 3D array of binary masks (ROIs) of shape [maskNumber, Y, X].
+        roi_trace (np.ndarray): 2D or 3D array of ROI fluorescence traces.
+                                Shape should be [maskNumber, frame] or [traceNumber, maskNumber, frame].
+        color_map (dict): Mapping of cluster IDs to colors.
+        leaves_color_list (np.ndarray): Color assignments for each leaf.
+        leaf_order (np.ndarray): ROI indices in dendrogram order.
+        background_contrast (float, optional): Controls ROI visibility against background wide-field image.
+                                               ROI:background = (1 + background_contrast):background_contrast
+        stimStart (float, optional): Stimulus start time (in seconds). Defaults to 3.0.
+        Yaxis_range (tuple, optional): Set fixed Y-axis range as (y_min, y_max). If None, auto-scales Y-axis.
+        plot_traces (bool, optional): Whether to plot individual traces.
+        plot_errBar (bool, optional): Whether to plot SEM as shading (error bars).
+        **kwargs: Optional keyword arguments.
+
+    Notes:
+        - Individual traces or error bars can be plotted only when 'roi_trace' is 3D (multi-trial data).
+    """
+
+    # Check the shape of input arrays
+    if img_series.ndim not in (3, 4):
+        raise ValueError("Image array must be 3D or 4D.")
+    if masks.ndim != 3:
+        raise ValueError("Mask array must be 3D.")
+    if roi_trace.ndim not in (2, 3):
+        raise ValueError("Trace array must be 2D or 3D.")
+
+    # Ensure that the shapes of image and trace arrays match
+    if (img_series.ndim == 3 and roi_trace.ndim == 3) or (img_series.ndim == 4 and roi_trace.ndim == 2):
+        raise ValueError("'img_series' and 'roi_trace' do not match in shape.")
+
+    # Convert 'img_series' to 3D by averaging across trials
+    img_series = np.mean(img_series, axis=0) if img_series.ndim == 4 else img_series
+
+    # Get the time vector
+    t = signalProcess.getTimeVec(img_series.shape[-1], **kwargs)
+
+    for cluster_color, cluster_d in color_map.items():
+        fig, ax = plt.subplots(1, 2, figsize=(15, 5))
+
+        # Display corresponding ROIs against wide-field image by adding contrast
+        ax[0].imshow((masks[leaf_order[leaves_color_list==cluster_color]].sum(axis=0) + background_contrast)*img_series.mean(axis=-1))
+
+        # Average fluorescence traces across corresponding ROIs
+        roi_trace_avgROI = roi_trace[:, leaf_order[leaves_color_list==cluster_color]].mean(axis=-2) if roi_trace.ndim == 3 \
+                           else roi_trace[leaf_order[leaves_color_list==cluster_color]].mean(axis=-2)
+
+        # Average fluorescence traces across trials if input trace array is 3D
+        roi_trace_avg = np.mean(roi_trace_avgROI, axis=0) if roi_trace.ndim == 3 else roi_trace_avgROI
+
+        ax[1].plot(t, roi_trace_avg)
+        ax[1].set_ylabel('Fluorescence Intensity', fontsize=14)
+        ax[1].set_xlabel('time (s)', fontsize=14)
+        ax[1].axvline(x=stimStart, color='k', linestyle='--')
+        fig.suptitle(f"CLUSTER: {cluster_d['cluster_id']}", color=cluster_d['cluster_color'], fontsize=18, fontweight='bold')
+        
+        if plot_traces is True and roi_trace.ndim == 3:
+            # Plot individual traces only when input array includes multiple trials
+            ax[1].plot(t, roi_trace_avgROI.T, color='gray', alpha=0.2)
+        
+        if plot_errBar is True and roi_trace.ndim == 3:
+            # Plot error bars only when input array includes multiple trials
+            _, uFpsem, uFmsem = signalProcess.meanPlusMinusSem(roi_trace_avgROI)
+            ax[1].fill_between(t, uFpsem, uFmsem, alpha=0.2)
+
+        if Yaxis_range is not None:
+            ax[1].set_ylim(Yaxis_range)
+

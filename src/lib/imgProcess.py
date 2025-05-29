@@ -905,6 +905,74 @@ def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF: np.ndarray = None
     return ROIimg
 
 
+def get_roi_sweep_masks(img_series: np.ndarray, roi_size: int = 10, shift: int = 5, 
+                        plot_roi: tuple = (10, 10)) -> tuple[np.ndarray, list, list]:
+    """
+    Generates and visualizes a grid of ROI masks swept across an image series.
+
+    Creates a series of square ROIs (Regions of Interest) that are systematically moved across
+    the input image series with a specified step size. Optionally visualizes a subset of the masks.
+
+    Args:
+        img_series (np.ndarray): 3D or 4D image array of shape [Y, X, frame] or [traceNumber, Y, X, frame].
+        roi_size (int, optional): Size of the square ROI in pixels.
+        shift (int, optional): Step size (in pixels) for moving the ROI across the image.
+        plot_roi (tuple, optional): Number of masks to visualize in (rows, cols) format. 
+                                    If 'None', disable mask visualization.
+
+    Returns:
+        tuple: A tuple containing:
+               - masks (np.ndarray): 3D array of binary masks for each ROI of shape [maskNumber, Y, X].
+               - x_roi (list): X-coordinates of the top-left corner for each ROI.
+               - y_roi (list): Y-coordinates of the top-left corner for each ROI.
+    """
+    
+    # Check the shape of image array
+    if img_series.ndim not in (3, 4):
+        raise ValueError("Image array must be 3D or 4D.")
+    
+    # Create empty lists to store masks and coordinates
+    masks = []
+    x_roi = []
+    y_roi = []
+
+    # Generate ROI masks
+    for y in range(0, img_series.shape[-3] - roi_size + 1, shift):
+        for x in range(0, img_series.shape[-2] - roi_size + 1, shift):
+            mask = np.zeros(img_series.shape[:-1], dtype=bool) if img_series.ndim == 3 \
+                   else np.zeros(img_series.shape[1:-1], dtype=bool)
+            mask[y:y + roi_size, x:x + roi_size] = True
+            masks.append(mask)
+            x_roi.append(x)
+            y_roi.append(y)
+
+    if plot_roi is not None:
+        # Example visualization of the first few masks
+        rows, cols = plot_roi[0], plot_roi[1]
+
+        # Create subplots
+        _, axes = plt.subplots(rows, cols, figsize=(12, 6))
+        # Flatten axes for easy iteration
+        axes = axes.flatten()
+
+        # Plot masks
+        for i, ax in enumerate(axes):
+            if i < len(masks):
+                ax.imshow(masks[i], cmap='gray')
+                ax.axis('off')
+            else:
+                ax.axis('off')  # Hide empty subplots if any
+
+        # Reduce spacing between subplots
+        plt.subplots_adjust(wspace=-0.9, hspace=-0.01)  # Reduce horizontal and vertical spacing
+
+        plt.suptitle("Examples of ROI Masks", fontsize=16)
+        plt.tight_layout()
+        plt.show()
+    
+    return np.array(masks), x_roi, y_roi
+
+
 def getROImask(imgPath: str = None,
                qcamFiles: list = None, 
                processEdges: bool = False, processResponse: bool = False,
