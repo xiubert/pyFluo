@@ -753,7 +753,7 @@ def barplot_avgDFF_singleDB(df: pd.DataFrame,
                                                                  (df_filtered['dB'] == dB_plot)]['dir'])
         if missing_ctrl:
             raise ValueError(f"Animals {missing_ctrl} missing control treatment '{control_treatment}' at {dB_plot} dB")
-        # Calculate mean response for each animal/treatment combination
+        # Calculate mean response for each animal/treatment/dB combination
         temp_means = df_filtered.groupby(['dir', 'treatment', 'dB'], sort=False)[resp_col].mean().reset_index()
         # Get control group means for each animal at 'dB_plot'
         control_means = temp_means[(temp_means['treatment'] == control_treatment) & (temp_means['dB'] == dB_plot)].set_index('dir')[resp_col]
@@ -894,6 +894,7 @@ def barplot_avgDFF_singleDB(df: pd.DataFrame,
 def plot_avgDFF_acrossAnimal(df: pd.DataFrame, 
                              measure_col: str = 'dB', 
                              resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak', 
+                             ctrl_treat: str = None, 
                              avgAnimal: bool = True, 
                              normalize: str = None, 
                              SEMbar: bool = True, 
@@ -903,13 +904,14 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame,
     """
     Plot barplots or lineplots with error bars for fluorescence peak response averaged across animals re sound intensities.
     Create a new dataframe including the mean, SD, and SEM of peak response for each sound level.
-    Optionally export the dataframe as an excel file.
 
     Args:
         df (pd.DataFrame): Metadata dataframe including columns: 'dir', 'treatment', 'dB', and column for the response variable.
         measure_col (str, optional): Column name for the independent variable. Can be sound intensity or frequency.
                                      Defaults to 'dB' (sound intensity).
         resp_col (str, optional): Column name for the response variable. Defaults to 'dFF_ROI_linFilt_butterFilt_peak'.
+        ctrl_treat (str, optional): Name of the control treatment in column 'treatment'. Normalize other treatments to it if normalization is performed.
+                                    - None: The first treatment that appears in the dataframe is assumed to be control treatment (CTRL).
         avgAnimal (bool, optional): Whether to average peak response across animals or individual trials.
                                     - 'True': Average in two steps:
                                               First average peak responses within each animal, then average the mean across animals.
@@ -918,7 +920,7 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame,
                                                Average peak responses of all individual trials from all animals.
                                                Error bars represent SEM or SD across trials.
         normalize (str, optional): Whether to normalize peak response to the max response (in percentage). 
-                                   - 'byGroup': For each animal, calculate the mean for each sound level, then normalize these means to the max mean.
+                                   - 'byGroup': For each animal, calculate the mean for each sound level, then normalize these means to the max mean in CTRL.
                                                 Only applicable when 'avgAnimal' is 'True'.
                                    - 'byTrial': For each animal, normalize all individual trials to the trial with the max response.
                                    - None: No normalization is applied.
@@ -978,9 +980,22 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame,
         # Calculate the mean within each dir for each treatment/dB combination
         df_grouped = df_filtered.groupby(['dir', 'treatment', measure_col], as_index=False, sort=False)[resp_col].mean().reset_index(drop=True)
         if normalize == 'byGroup':
-            # Normalize mean response of each treatment/dB combination group to the max mean response within the same animal
-            df_grouped[resp_col] = df_grouped.groupby(['dir'], sort=False)[resp_col].transform(lambda x: (x / x.max()) * 100)
-            print('Normalized on the treatment/dB combination group basis.')
+            # Normalize mean response of each treatment/dB combination group to the max mean response in CTRL within the same animal
+            # Get the first treatment that appears in the dataframe as control if not specified
+            control_treatment = ctrl_treat if ctrl_treat is not None else df_filtered['treatment'].iloc[0]
+            # Verify control treatment exists for all animals
+            missing_ctrl = set(df_filtered['dir']) - set(df_filtered[df_filtered['treatment'] == control_treatment]['dir'])
+            if missing_ctrl:
+                raise ValueError(f"Animals {missing_ctrl} missing control treatment '{control_treatment}'")
+            # Calculate mean response for each animal/treatment/dB combination
+            temp_means = df_filtered.groupby(['dir', 'treatment', measure_col], sort=False)[resp_col].mean().reset_index()
+            # Get max mean response in control treatment for each animal
+            control_max = temp_means[temp_means['treatment'] == control_treatment].groupby('dir', sort=False)[resp_col].max()
+            # Normalize all treatments to the control group's max mean for each animal
+            temp_means[resp_col] = temp_means.groupby('dir', sort=False)[resp_col].transform(lambda x: (x / control_max[x.name]) * 100)
+            # Replace the grouped means with normalized values
+            df_grouped = temp_means
+            print('Normalized to max response in control treatment on the treatment/dB combination group basis.')
     else:
         # Maintain the unaveraged original data of each individual trial
         df_grouped = df_filtered.loc[:, ['treatment', measure_col, resp_col]]
