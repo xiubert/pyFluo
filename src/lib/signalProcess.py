@@ -1,11 +1,14 @@
-from scipy.signal import butter, filtfilt
 import numpy as np
 import pandas as pd
-from typing import Tuple
 import os
 import warnings
 import joblib
+
+from scipy.signal import butter, filtfilt
+from typing import Tuple
 from glob import glob
+from scipy.cluster.hierarchy import linkage
+from scipy.spatial.distance import pdist
 
 import lib.metadataProcess as metadataProcess
 
@@ -89,14 +92,14 @@ def subtractLinFit(t, signal: np.ndarray, offset: bool = True, **kwargs) -> np.n
 
     Args:
         t (list or array): time vector (in seconds).
-        signal (numpy array): 1D or 2D signal array of shape [frame] or [traceNumber, frame].
+        signal (numpy array): 1D, 2D, or 3D signal array of shape [frame], [traceNumber, frame], or [traceNumber, maskNumber, frame].
         offset (bool, optional): whether to add baseline fluorescence (f0) back to the corrected signal as the offset.
-                                Defaults to 'True'.
+                                 Defaults to 'True'.
     
     Returns:
         corrected_signal (numpy array): signal array after removal of linear fit (same shape as input signal).
-        slope (numpy array): array of slopes for each trace (1D or scalar for 1D input).
-        intercept (numpy array): array of intercepts for each trace (1D or scalar for 1D input).
+        slope (numpy array): array of slopes for each trace (one lower dimension than input signal).
+        intercept (numpy array): array of intercepts for each trace (one lower dimension than input signal).
     """
 
     # Optionally override parameters using kwargs
@@ -123,25 +126,40 @@ def subtractLinFit(t, signal: np.ndarray, offset: bool = True, **kwargs) -> np.n
             corrected_signal = signal - (t*slope + intercept)
     
     elif signal.ndim == 2:
-        # If the signal is 2D, process each trace (row) independently
+        # Assume signal shape is [traceNumber, frame]. Process each trace (row) independently
         # Initialize the output array
         corrected_signal = np.zeros_like(signal)
         slope = np.zeros(signal.shape[0])
         intercept = np.zeros(signal.shape[0])
         
         for i in range(signal.shape[0]):
-            slope_trace, intercept_trace = np.linalg.lstsq(X, signal[i], rcond=None)[0]
-            slope[i] = slope_trace
-            intercept[i] = intercept_trace
+            slope[i], intercept[i] = np.linalg.lstsq(X, signal[i], rcond=None)[0]
             
             if offset:
                 f0 = getBaseResp(signal[i], t, **kwargs)[0]
-                corrected_signal[i] = signal[i] - (t*slope_trace + intercept_trace) + f0
+                corrected_signal[i] = signal[i] - (t*slope[i] + intercept[i]) + f0
             else:
-                corrected_signal[i] = signal[i] - (t*slope_trace + intercept_trace)
+                corrected_signal[i] = signal[i] - (t*slope[i] + intercept[i])
     
+    elif signal.ndim == 3:
+        # Assume signal shape is [traceNumber, maskNumber, frame]. Process each trace (the third dimension) independently
+        # Initialize the output array
+        corrected_signal = np.zeros_like(signal)
+        slope = np.zeros((signal.shape[0], signal.shape[1]))
+        intercept = np.zeros((signal.shape[0], signal.shape[1]))
+        
+        for i in range(signal.shape[0]):
+            for j in range (signal.shape[1]):
+                slope[i, j], intercept[i, j] = np.linalg.lstsq(X, signal[i, j], rcond=None)[0]
+                
+                if offset:
+                    f0 = getBaseResp(signal[i, j], t, **kwargs)[0]
+                    corrected_signal[i, j] = signal[i, j] - (t*slope[i, j] + intercept[i, j]) + f0
+                else:
+                    corrected_signal[i, j] = signal[i, j] - (t*slope[i, j] + intercept[i, j])
+
     else:
-        raise ValueError("Signal array must be 1D or 2D.")
+        raise ValueError("Signal array must be 1D, 2D, or 3D.")
     
     return corrected_signal, slope, intercept
 
@@ -246,7 +264,7 @@ def is_valid_resp(imgSeries: np.ndarray, subLinFit: bool = True, dFResp: bool = 
     Negative outliers refer to traces whose Avg response is 3 SDs below Avg baseline or peak response is below 0.
 
     Args:
-        imgSeries (array): array of shape (Y, X, frame)
+        imgSeries (array): 3D array of shape (Y, X, frame)
         subLinFit (bool): whether to subtract fitted line
         dFResp (bool): if true, calculate dF response rather than dFF
         t_base (tuple): time window (in seconds) for baseline
@@ -312,7 +330,7 @@ def is_significant_resp(imgSeries: np.ndarray, subLinFit: bool = True, dFResp: b
     Insigificant response refers to traces whose max response (and min response) is within 3 SDs (2 SDs) range of Avg baseline.
 
     Args:
-        imgSeries (array): array of shape (Y, X, frame)
+        imgSeries (array): 3D array of shape (Y, X, frame)
         subLinFit (bool): whether to subtract fitted line
         dFResp (bool): if true, calculate dF response rather than dFF
         t_base (tuple): time window (in seconds) for baseline
@@ -402,7 +420,7 @@ def pkDFFimg(imgSeries: np.ndarray,
     Calculates peak dFF response from image series array.
     
     Args:
-        imgSeries (array): array of shape (Y, X, frame)
+        imgSeries (array): 3D array of shape (Y, X, frame)
         subLinFit (bool): whether to subtract fitted line
         butterFilt (bool): whether to apply low pass filter
         dFResp (bool): if true, calculate dF response rather than dFF
@@ -671,3 +689,85 @@ def updateTable_signal(df: pd.DataFrame, qcam2img: dict, mask_name: str = 'respo
     )
 
     return df_updated
+
+
+def get_avg_in_rois(img_series: np.ndarray, masks: np.ndarray) -> np.ndarray:
+    """
+    Computes the average fluorescence within a series of ROIs sweeping across the entire image.
+
+    For each binary mask in 'masks', this function extracts the corresponding region from 
+    each frame in 'img_series' and computes the average fluorescence intensity within that ROI.
+
+    Args:
+        img_series (np.ndarray): 3D or 4D image array of shape [Y, X, frame] or [traceNumber, Y, X, frame].
+        masks (np.ndarray): 3D array of binary masks (ROIs) of shape [maskNumber, Y, X].
+
+    Returns:
+        roi_avg (np.ndarray): 2D or 3D array of average fluorescence traces within ROIs.
+                              Shape will be [maskNumber, frame] or [traceNumber, maskNumber, frame].
+    """
+    
+    print(f"Image array: {img_series.shape}")
+
+    # Check the shape of image and mask arrays
+    if img_series.ndim not in (3, 4):
+        raise ValueError("Image array must be 3D or 4D.")
+    if masks.ndim != 3:
+        raise ValueError("Mask array must be 3D.")
+    
+    # Initialize an array to store the average values
+    roi_avg = np.zeros((len(masks), img_series.shape[-1])) if img_series.ndim == 3 else \
+              np.zeros((img_series.shape[0], len(masks), img_series.shape[-1]))
+
+    # Compute the average value within each ROI for each frame
+    for i, mask in enumerate(masks):
+        # Use broadcasting to apply the mask across all frames (and all traces)
+        if img_series.ndim == 3:
+            masked_data = img_series[mask, :]  # Shape will be (num_masked_pixels, num_frames)
+            roi_avg[i, :] = np.mean(masked_data, axis=0)  # Average across pixels
+        else:
+            # Image array is 4D
+            masked_data = img_series[:, mask, :]  # Shape will be (num_traces, num_masked_pixels, num_frames)
+            roi_avg[:, i, :] = np.mean(masked_data, axis=1)
+
+    print(f"ROI fluorescence array: {roi_avg.shape}")
+
+    return roi_avg
+
+
+def cluster_roi(roi_trace: np.ndarray, method: str = 'ward') -> np.ndarray:
+    """
+    Perform hierarchical clustering on ROI fluorescence responses.
+
+    This function takes the temporal fluorescence traces within a series of sweeping ROIs 
+    and clusters them based on their similarity using hierarchical clustering.
+
+    Args:
+        roi_trace (np.ndarray): 2D or 3D array of ROI fluorescence traces.
+                                Shape should be [maskNumber, frame] or [traceNumber, maskNumber, frame].
+        method (str, optional): Linkage method for hierarchical clustering.
+                                Defaults to 'ward', using the Ward variance minimization algorithm.
+    
+    Returns:
+        linkage_matrix (np.ndarray): Hierarchical clustering linkage matrix of shape [maskNumber-1, 4].
+                                     Each row contains [cluster1, cluster2, distance, cluster_size].
+    """
+
+    # Check the shape of input array
+    if roi_trace.ndim not in (2, 3):
+        raise ValueError("Trace array must be 2D or 3D.")
+    
+    # Average across different trials (repetitions) for 3D array
+    roi_trace = np.mean(roi_trace, axis=0) if roi_trace.ndim == 3 else roi_trace
+    
+    # Flatten the 2D ROI data for clustering
+    X = roi_trace.reshape(roi_trace.shape[0], -1)
+    print(f"Input data shape for clustering: {X.shape}")
+
+    # Compute pairwise distances using Euclidean metric
+    distance_matrix = pdist(X, metric='euclidean')
+    
+    # Perform hierarchical clustering
+    linkage_matrix = linkage(distance_matrix, method=method)
+    
+    return linkage_matrix
