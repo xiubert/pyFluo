@@ -17,6 +17,7 @@ from glob import glob
 from operator import itemgetter
 import warnings
 import math
+from itertools import product
 
 import lib.signalProcess as signalProcess
 import lib.fileIngest as fileIngest
@@ -745,7 +746,8 @@ def barplot_avgDFF_singleDB(df: pd.DataFrame,
                             ctrl_treat: str = None, 
                             avgAnimal: bool = True, 
                             normalize: str = None, 
-                            SEMbar: bool = True) -> pd.DataFrame:
+                            SEMbar: bool = True, 
+                            include_0dB: bool = False) -> pd.DataFrame:
     """
     Plot barplots for averaged fluorescence peak response across animals (with individual animal data points) at specified sound intensity.
 
@@ -770,6 +772,7 @@ def barplot_avgDFF_singleDB(df: pd.DataFrame,
                                                 Only applicable when 'avgAnimal' is 'True'.
                                    - 'trial2group': For each animal, calculate the mean of CTRL treatment (max mean), then normalize each single trial to this mean.
         SEMbar (bool, optional): If 'True', use standard error (SEM) for error bars. If 'False', use standard deviation (SD).
+        include_0dB (bool, optional): Include 0 dB intensity even if it is not among the common 'dB' levels across all animals.
 
     Returns:
         df_stats (pd.DataFrame): Dataframe including statistics computed across animals ('dir's). 
@@ -793,6 +796,10 @@ def barplot_avgDFF_singleDB(df: pd.DataFrame,
     if dB_plot not in df['dB'].unique():
         raise ValueError(f"{dB_plot} not found in the 'dB' column.")
     
+    # Check whether 0 dB exists if it is to be included
+    if include_0dB and 0 not in df['dB'].unique():
+        raise ValueError("0 not found in the 'dB' column.")
+    
     # Check whether control treatment exists if specified
     if ctrl_treat is not None and ctrl_treat not in df['treatment'].unique():
         raise ValueError(f"{ctrl_treat} not found in the 'treatment' column.")
@@ -803,7 +810,10 @@ def barplot_avgDFF_singleDB(df: pd.DataFrame,
         normalize = None
 
     # Filter data for the specified dB level
-    df_filtered = df[df['dB'] == dB_plot].copy().reset_index(drop=True)
+    if include_0dB:
+        df_filtered = df[df['dB'].isin([dB_plot, 0])].copy().reset_index(drop=True)
+    else:
+        df_filtered = df[df['dB'] == dB_plot].copy().reset_index(drop=True)
     
     # Apply normalization if specified
     if normalize == 'byTrial':
@@ -813,85 +823,142 @@ def barplot_avgDFF_singleDB(df: pd.DataFrame,
     elif normalize == 'byGroup' and avgAnimal:
         # Get the first treatment that appears in the dataframe as control if not specified
         control_treatment = ctrl_treat if ctrl_treat is not None else df_filtered['treatment'].iloc[0]
-        # Verify control treatment exists for all animals
-        missing_ctrl = set(df_filtered['dir']) - set(df_filtered[df_filtered['treatment'] == control_treatment]['dir'])
+        # Verify control treatment exists for all animals at 'dB_plot'
+        missing_ctrl = set(df_filtered['dir']) - set(df_filtered[(df_filtered['treatment'] == control_treatment) & 
+                                                                 (df_filtered['dB'] == dB_plot)]['dir'])
         if missing_ctrl:
-            raise ValueError(f"Animals {missing_ctrl} missing control treatment '{control_treatment}'")
-        # Calculate mean response for each animal/treatment combination
-        temp_means = df_filtered.groupby(['dir', 'treatment'], sort=False)[resp_col].mean().reset_index()
-        # Get control group means for each animal
-        control_means = temp_means[temp_means['treatment'] == control_treatment].set_index('dir')[resp_col]
+            raise ValueError(f"Animals {missing_ctrl} missing control treatment '{control_treatment}' at {dB_plot} dB")
+        # Calculate mean response for each animal/treatment/dB combination
+        temp_means = df_filtered.groupby(['dir', 'treatment', 'dB'], sort=False)[resp_col].mean().reset_index()
+        # Get control group means for each animal at 'dB_plot'
+        control_means = temp_means[(temp_means['treatment'] == control_treatment) & (temp_means['dB'] == dB_plot)].set_index('dir')[resp_col]
         # Normalize all treatments to the control group mean for each animal
         temp_means[resp_col] = temp_means.groupby('dir', sort=False)[resp_col].transform(lambda x: (x / control_means[x.name]) * 100)
         # Merge the normalized values back to the original dataframe
-        df_filtered = df_filtered.drop(resp_col, axis=1).merge(temp_means, on=['dir', 'treatment'])
+        df_filtered = df_filtered.drop(resp_col, axis=1).merge(temp_means, on=['dir', 'treatment', 'dB'])
 
     elif normalize == 'trial2group':
         # Get the first treatment that appears in the dataframe as control if not specified
         control_treatment = ctrl_treat if ctrl_treat is not None else df_filtered['treatment'].iloc[0]
-        # Verify control treatment exists for all animals
-        missing_ctrl = set(df_filtered['dir']) - set(df_filtered[df_filtered['treatment'] == control_treatment]['dir'])
+        # Verify control treatment exists for all animals at 'dB_plot'
+        missing_ctrl = set(df_filtered['dir']) - set(df_filtered[(df_filtered['treatment'] == control_treatment) & 
+                                                                 (df_filtered['dB'] == dB_plot)]['dir'])
         if missing_ctrl:
-            raise ValueError(f"Animals {missing_ctrl} missing control treatment '{control_treatment}'")
-        # Calculate mean response for control group of each animal
-        control_means = df_filtered[df_filtered['treatment'] == control_treatment].groupby('dir')[resp_col].mean()
-        # Normalize all trials to their animal's control group mean
+            raise ValueError(f"Animals {missing_ctrl} missing control treatment '{control_treatment}' at {dB_plot} dB")
+        # Calculate mean response for control group of each animal at 'dB_plot' only
+        control_means = df_filtered[(df_filtered['treatment'] == control_treatment) & (df_filtered['dB'] == dB_plot)].groupby('dir')[resp_col].mean()
+        # Normalize all trials to the corresponding animal's control group mean at 'dB_plot'
         df_filtered[resp_col] = df_filtered.groupby('dir', sort=False)[resp_col].transform(lambda x: (x / control_means[x.name]) * 100)
     
     if avgAnimal:
-        # Calculate mean response for each animal under each treatment
-        plot_data = df_filtered.groupby(['dir', 'treatment'], sort=False)[resp_col].mean().reset_index()
+        # Calculate mean response for each animal under each treatment and dB
+        plot_data = df_filtered.groupby(['dir', 'treatment', 'dB'], sort=False)[resp_col].mean().reset_index()
     else:
         # Use all individual trials
-        plot_data = df_filtered[['dir', 'treatment', resp_col]].copy()
+        plot_data = df_filtered[['dir', 'treatment', 'dB', resp_col]].copy()
     
-    # Calculate group statistics (mean and SEM/SD) for each treatment
-    df_stats = plot_data.groupby('treatment', sort=False)[resp_col].agg(['count', 'mean', 'std', 'sem']).reset_index()
+    # Calculate group statistics (mean and SEM/SD) for each treatment and dB
+    df_stats = plot_data.groupby(['treatment', 'dB'], sort=False)[resp_col].agg(['count', 'mean', 'std', 'sem']).reset_index()
     
     # Initialize barplot
-    fig, ax = plt.subplots(figsize=(4, 6))
+    fig, ax = plt.subplots(figsize=(5, 6)) if include_0dB else plt.subplots(figsize=(4, 6))
     palette = plt.cm.tab10.colors
     # palette = sns.color_palette("Set1")
-    error = df_stats['sem'] if SEMbar else df_stats['std']
     nTreat = len(df_stats['treatment'])
-    istwo_treatments = nTreat==2
     
     # Plot bars with error
-    ax.bar(df_stats['treatment'], df_stats['mean'], 
-           yerr=error, capsize=5, color=palette[:nTreat], width=0.3)
+    if include_0dB:
+        # Plot bars at both 'dB_plot' and 0 dB
+        # Create positions for the bars
+        bar_width = 0.2  # Width of bars
+        gap_width = 0.05  # Spacing between dB_plot and 0 dB bars
+        treatments = df_stats['treatment'].unique()
+        x = np.arange(len(treatments)) * 0.8  # Spacing between treatment groups
+        bar_positions = []
+        for i, treat in enumerate(treatments):
+            bar_positions.extend([x[i] - bar_width/2 - gap_width/2, x[i] + bar_width/2 + gap_width/2])
+        
+        # Store bar information for tick labeling
+        bar_info = []
+        for i, (treat, dB) in enumerate(product(treatments, [dB_plot, 0])):
+            subset = df_stats[(df_stats['treatment'] == treat) & (df_stats['dB'] == dB)]
+            if not subset.empty:
+                error = subset['sem'].values[0] if SEMbar else subset['std'].values[0]
+                ax.bar(bar_positions[i], subset['mean'].values[0], 
+                       width=bar_width, yerr=error, capsize=5,
+                       color=palette[i//2], alpha=0.5 if dB == 0 else 1)
+                bar_info.append((bar_positions[i], treat, dB))
+        
+        # Set up two rows of tick labels
+        ax.set_xticks(bar_positions)
+        ax.set_xticklabels([f"{dB} dB" for _, _, dB in bar_info], fontsize=12)
+        
+        # Add treatment names as secondary labels
+        for i, t in enumerate(treatments):
+            # Position in middle of the two bars for this treatment
+            treatment_xpos = x[i]
+            ax.text(treatment_xpos, -0.08*ax.get_ylim()[1], t, 
+                    ha='center', va='top', fontsize=12)
     
-    # Create a dictionary mapping treatments to x-positions
-    treatment_pos = {t: i for i, t in enumerate(df_stats['treatment'])}
+    else:
+        # Only plot bars at specified 'dB_plot'
+        error = df_stats['sem'] if SEMbar else df_stats['std']
+        ax.bar(df_stats['treatment'], df_stats['mean'], 
+               yerr=error, capsize=5, color=palette[:nTreat], width=0.3)
     
+    # Add points representing the data of each animal
     for animal in plot_data['dir'].unique():
         animal_data = plot_data[plot_data['dir'] == animal]
         
-        # If there are exactly two treatments, add offsets to dots
-        if istwo_treatments:
-            offsets = [0.3 if t == df_stats['treatment'][0] else -0.3 for t in animal_data['treatment']]
-            x_pos = [treatment_pos[t] + offset for t, offset in zip(animal_data['treatment'], offsets)]
+        if include_0dB:
+            for t in treatments:
+                for j, dB in enumerate([dB_plot, 0]):
+                    subset = animal_data[(animal_data['treatment'] == t) & (animal_data['dB'] == dB)]
+                    if not subset.empty:
+                        # Position points with the same offset as bars
+                        x_offset = -bar_width/2 - gap_width/2 if j == 0 else bar_width/2 + gap_width/2
+                        x_pos = x[treatments.tolist().index(t)] + x_offset
+                        y_vals = subset[resp_col].values
+                        for y in y_vals:
+                            x_jitter = x_pos + np.random.normal(0, 0.015)
+                            point_size = 40 if not avgAnimal else 60
+                            ax.scatter(x_jitter, y, facecolors='none', edgecolors='k', s=point_size, linewidth=1.5)
         else:
-            x_pos = [treatment_pos[t] for t in animal_data['treatment']]
-        
-        y_vals = animal_data[resp_col].values
-        
-        # Add connecting lines for paired data when averaging by animal
-        if avgAnimal:
-            ax.plot(x_pos, y_vals, color='gray', alpha=0.8, linestyle='--', linewidth=1.5)
-        
-        # If each dot represents a single trial, plot them with jitters 
-        for x, y, t in zip(x_pos, y_vals, animal_data['treatment']):
-            x_jitter = x + (np.random.normal(0, 0.03) if not avgAnimal else 0)
-            edge_color = palette[treatment_pos[t]] if istwo_treatments else 'k'
-            point_size = 40 if not avgAnimal else 60
-            ax.scatter(x_jitter, y, facecolors='none', edgecolors=edge_color,
-                       s=point_size, linewidth=2 if avgAnimal else 1.5)
+            # Create a dictionary mapping treatments to x-positions
+            treatment_pos = {t: i for i, t in enumerate(df_stats['treatment'])}
+            
+            # If there are exactly two treatments, add offsets to dots
+            if nTreat==2:
+                offsets = [0.3 if t == df_stats['treatment'][0] else -0.3 for t in animal_data['treatment']]
+                x_pos = [treatment_pos[t] + offset for t, offset in zip(animal_data['treatment'], offsets)]
+            else:
+                x_pos = [treatment_pos[t] for t in animal_data['treatment']]
+            
+            y_vals = animal_data[resp_col].values
+            
+            # Add connecting lines for paired data when averaging by animal
+            if avgAnimal:
+                ax.plot(x_pos, y_vals, color='gray', alpha=0.8, linestyle='--', linewidth=1.5)
+            
+            # If each dot represents a single trial, plot them with jitters 
+            for x, y, t in zip(x_pos, y_vals, animal_data['treatment']):
+                x_jitter = x + (np.random.normal(0, 0.015) if not avgAnimal else 0)
+                edge_color = palette[treatment_pos[t]] if nTreat==2 else 'k'
+                point_size = 40 if not avgAnimal else 60
+                ax.scatter(x_jitter, y, facecolors='none', edgecolors=edge_color,
+                           s=point_size, linewidth=2 if avgAnimal else 1.5)
     
     # Add labels and title
-    ax.set_xlabel('Treatment', fontsize=12)
-    ylabel = f'{resp_col} Response (%)' if normalize else f'{resp_col} Response'
-    ax.set_ylabel(ylabel, fontsize=12)
-    ax.set_title(f'Fluorescence Peak Response at {dB_plot} dB', fontsize=14, pad=20)
+    if not include_0dB:
+        ax.set_xlabel('Treatment', fontsize=12)
+    ax.set_ylabel(f'Normalized {resp_col} Response (%)' if normalize else f'{resp_col} Response', fontsize=12)
+    ax.set_title(f'Fluorescence Peak Response at {dB_plot} and 0 dB' if include_0dB 
+                 else f'Fluorescence Peak Response at {dB_plot} dB', fontsize=14, pad=20)
+    ax.tick_params(axis='both', labelsize=12)
+
+    # Remove the top and right spines
+    ax.spines['top'].set_visible(False)
+    ax.spines['right'].set_visible(False)
     
     plt.tight_layout()
     plt.show()
@@ -902,21 +969,24 @@ def barplot_avgDFF_singleDB(df: pd.DataFrame,
 def plot_avgDFF_acrossAnimal(df: pd.DataFrame, 
                              measure_col: str = 'dB', 
                              resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak', 
+                             ctrl_treat: str = None, 
                              avgAnimal: bool = True, 
                              normalize: str = None, 
                              SEMbar: bool = True, 
                              plotAvg_reLevel: str = 'line', 
+                             include_0dB: bool = False, 
                              **kwargs) -> pd.DataFrame:
     """
     Plot barplots or lineplots with error bars for fluorescence peak response averaged across animals re sound intensities.
     Create a new dataframe including the mean, SD, and SEM of peak response for each sound level.
-    Optionally export the dataframe as an excel file.
 
     Args:
         df (pd.DataFrame): Metadata dataframe including columns: 'dir', 'treatment', 'dB', and column for the response variable.
         measure_col (str, optional): Column name for the independent variable. Can be sound intensity or frequency.
                                      Defaults to 'dB' (sound intensity).
         resp_col (str, optional): Column name for the response variable. Defaults to 'dFF_ROI_linFilt_butterFilt_peak'.
+        ctrl_treat (str, optional): Name of the control treatment in column 'treatment'. Normalize other treatments to it if normalization is performed.
+                                    - None: The first treatment that appears in the dataframe is assumed to be control treatment (CTRL).
         avgAnimal (bool, optional): Whether to average peak response across animals or individual trials.
                                     - 'True': Average in two steps:
                                               First average peak responses within each animal, then average the mean across animals.
@@ -925,7 +995,7 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame,
                                                Average peak responses of all individual trials from all animals.
                                                Error bars represent SEM or SD across trials.
         normalize (str, optional): Whether to normalize peak response to the max response (in percentage). 
-                                   - 'byGroup': For each animal, calculate the mean for each sound level, then normalize these means to the max mean.
+                                   - 'byGroup': For each animal, calculate the mean for each sound level, then normalize these means to the max mean in CTRL.
                                                 Only applicable when 'avgAnimal' is 'True'.
                                    - 'byTrial': For each animal, normalize all individual trials to the trial with the max response.
                                    - None: No normalization is applied.
@@ -934,6 +1004,7 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame,
                                          - 'line': Plot treatments in different colors in one lineplot.
                                          - 'bar': Plot treatments in multiple barplots sharing the same Y-axis scale.
                                          - None: Only return the statistics dataframe.
+        include_0dB (bool, optional): Include 0 dB intensity even if it is not among the common 'dB' levels across all animals.
         **kwargs: Optional arguments that will override default.
             example: capsize (float, optional): Error bar cap size. Defaults to no caps.
 
@@ -951,6 +1022,10 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame,
     if not all(col in df.columns for col in required_col):
         raise ValueError(f"DataFrame must contain the following columns: {required_col}")
     
+    # Check whether 0 dB exists if it is to be included
+    if include_0dB and 0 not in df['dB'].unique():
+        raise ValueError("0 not found in the 'dB' column.")
+
     # Check whether normalization is applicable
     if normalize == 'byGroup' and not avgAnimal:
         warnings.warn("'byGroup' normalization requires 'avgAnimal=True' - skipping normalization")
@@ -962,6 +1037,8 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame,
     common_dB = set(dB_lists[0])    # Start with the first list
     for item in dB_lists[1:]:    # Iterate over the remaining lists
         common_dB.intersection_update(item)
+    if include_0dB and 0 not in common_dB:
+        common_dB.add(0)  # Add 0 dB if not already present
     if not common_dB:
         raise ValueError(f"No common '{measure_col}' values found across all animals and treatments.")
     common_dB = sorted(common_dB)   # Sort 'dB' values in ascending order
@@ -978,9 +1055,22 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame,
         # Calculate the mean within each dir for each treatment/dB combination
         df_grouped = df_filtered.groupby(['dir', 'treatment', measure_col], as_index=False, sort=False)[resp_col].mean().reset_index(drop=True)
         if normalize == 'byGroup':
-            # Normalize mean response of each treatment/dB combination group to the max mean response within the same animal
-            df_grouped[resp_col] = df_grouped.groupby(['dir'], sort=False)[resp_col].transform(lambda x: (x / x.max()) * 100)
-            print('Normalized on the treatment/dB combination group basis.')
+            # Normalize mean response of each treatment/dB combination group to the max mean response in CTRL within the same animal
+            # Get the first treatment that appears in the dataframe as control if not specified
+            control_treatment = ctrl_treat if ctrl_treat is not None else df_filtered['treatment'].iloc[0]
+            # Verify control treatment exists for all animals
+            missing_ctrl = set(df_filtered['dir']) - set(df_filtered[df_filtered['treatment'] == control_treatment]['dir'])
+            if missing_ctrl:
+                raise ValueError(f"Animals {missing_ctrl} missing control treatment '{control_treatment}'")
+            # Calculate mean response for each animal/treatment/dB combination
+            temp_means = df_filtered.groupby(['dir', 'treatment', measure_col], sort=False)[resp_col].mean().reset_index()
+            # Get max mean response in control treatment for each animal
+            control_max = temp_means[temp_means['treatment'] == control_treatment].groupby('dir', sort=False)[resp_col].max()
+            # Normalize all treatments to the control group's max mean for each animal
+            temp_means[resp_col] = temp_means.groupby('dir', sort=False)[resp_col].transform(lambda x: (x / control_max[x.name]) * 100)
+            # Replace the grouped means with normalized values
+            df_grouped = temp_means
+            print('Normalized to max response in control treatment on the treatment/dB combination group basis.')
     else:
         # Maintain the unaveraged original data of each individual trial
         df_grouped = df_filtered.loc[:, ['treatment', measure_col, resp_col]]
@@ -1009,10 +1099,17 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame,
             plt.errorbar(group[measure_col], group[f'mean_{resp_col}'], 
                          yerr=group[f'sem_{resp_col}'] if SEMbar else group[f'std_{resp_col}'], 
                          label=treatment, marker='o', **kwargs)
-        plt.xlabel("Sound Intensity (dB)")
-        plt.ylabel(f"{resp_col} Response" if normalize is None else f"{resp_col} Response (%)")
-        plt.legend(title="Treatment")
-        plt.title("Response by Sound Intensity and Treatment")
+        plt.xlabel("Sound Intensity (dB SPL)", fontsize=12, labelpad=10)
+        plt.ylabel(f"Normalized {resp_col} Response (%)" if normalize else f"{resp_col} Response", fontsize=12, labelpad=10)
+        plt.legend(title="Treatment", title_fontsize=12, fontsize=12)
+        plt.title("Response by Sound Intensity and Treatment", fontsize=14, pad=20)
+        plt.tick_params(axis='both', labelsize=12)
+
+        # Remove the top and right spines
+        ax = plt.gca()
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+
         plt.show()
 
     elif plotAvg_reLevel == 'bar':
@@ -1030,9 +1127,12 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame,
         g.map_dataframe(plot_bars_with_error, measure_col=measure_col, **kwargs)
 
         # Add labels and titles
-        g.set_axis_labels("Sound Intensity (dB)", f"{resp_col} Response" if normalize is None else f"{resp_col} Response (%)")
+        g.set_axis_labels("Sound Intensity (dB SPL)", f"{resp_col} Response" if normalize is None else f"{resp_col} Response (%)")
         g.set_titles(col_template="{col_name}")
         plt.show()
+
+    else:
+        raise ValueError("'plotAvg_reLevel' must be 'line' or 'bar'.")
 
     return df_avg
 
