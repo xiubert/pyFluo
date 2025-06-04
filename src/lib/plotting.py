@@ -92,6 +92,81 @@ def experimentAvgPlot(dPath: str = None, qFiles: list = None,
     fig.show()
 
 
+def plot_peakDFF_reTime(df: pd.DataFrame, 
+                        time_col: str = 'timestamp_init', 
+                        dB_plot: int = 80, 
+                        resp_col: str = 'dFF_ROI_linFilt_butterFilt_peak'):
+    """
+    Plot peak response through experiment time to visualize potential time effects on response amplitudes.
+    Connects different treatments with dashed lines if multiple treatments exist.
+
+    Args:
+        df (pd.DataFrame): Metadata dataframe including columns: 'dir', 'dB', specified 'time_col' and 'resp_col'.
+        time_col (str, optional): Name of the column containing the experiment time.
+                                  Defaults to 'timestamp_init'.
+        dB_plot (int, optional): Sound intensity (in dB) for peak response to be plotted. Defaults to 80.
+                                 If None, plot all sound intensities.
+        resp_col (str, optional): Name of the column containing the response variable. 
+                                  Defaults to 'dFF_ROI_linFilt_butterFilt_peak'.
+    """
+    
+    # Check whether required columns exist
+    required_cols = ['dir', 'dB', time_col, resp_col]
+    if not all(col in df.columns for col in required_cols):
+        raise ValueError(f"Dataframe must contain the following columns: {required_cols}")
+    
+    # Check whether specified sound level exists
+    if dB_plot is not None and dB_plot not in df['dB'].unique():
+        raise ValueError(f"{dB_plot} not found in the 'dB' column.")
+    
+    # Filter and sort data in chronological order
+    df_filtered = df[df['dB'] == dB_plot] if dB_plot is not None else df
+    df_filtered = df_filtered.sort_values(time_col).copy()
+    
+    fig,ax = plt.subplots(figsize=(16,4))
+    colors = plt.cm.tab10.colors
+
+    multi_animal = True if df['dir'].nunique() > 1 else False
+
+    for i, (dir_name, dir_df_filtered) in enumerate(df_filtered.groupby('dir')):
+        # Calculate relative time in minutes
+        relative_time = (dir_df_filtered[time_col] - dir_df_filtered[time_col].iloc[0]).dt.total_seconds() / 60
+        color = colors[i % len(colors)]
+
+        if 'treatment' in df.columns and df['treatment'].nunique() > 1:
+            # For multiple treatments
+            treatments = dir_df_filtered['treatment'].unique()
+            for j, treatment in enumerate(treatments):
+                former_treat_mask = dir_df_filtered['treatment'] == treatments[j-1]
+                latter_treat_mask = dir_df_filtered['treatment'] == treatment
+
+                # Plot each treatment segment separately
+                ax.plot(relative_time[latter_treat_mask], 
+                        dir_df_filtered[resp_col][latter_treat_mask], 
+                        '.-', color=color, markersize=6 if multi_animal else 10, 
+                        label=dir_name if j == 0 else None)  # Only add label for first treatment of each animal
+                
+                # Connect different treatments with dashed lines
+                if j > 0:
+                    former_last_idx = dir_df_filtered.loc[former_treat_mask].index[-1]
+                    latter_first_idx = dir_df_filtered.loc[latter_treat_mask].index[0]
+                    
+                    ax.plot([relative_time[former_last_idx], relative_time[latter_first_idx]],
+                            [dir_df_filtered[resp_col].loc[former_last_idx], dir_df_filtered[resp_col].loc[latter_first_idx]],
+                            '--', color=color)
+        else:
+            # For single treatment
+            ax.plot(relative_time, dir_df_filtered[resp_col], '.-', color=color, markersize=10, label=dir_name)
+    
+    ax.set_ylabel(f'{resp_col}', fontsize=12)
+    ax.set_xlabel('Time since experiment start (min)', fontsize=12)
+    ax.set_title(f'Peak response at {dB_plot} dB through experiment time' if dB_plot is not None 
+                 else 'Peak response at all intensities through experiment time', fontsize=14)
+    ax.legend()
+
+    plt.show()
+
+
 def plot_respHeatmap(df: pd.DataFrame, dB_plot: int = 80, same_scale: bool = True, 
                      contrast_percentile: tuple[float, float] = None, 
                      ROIcontour: np.ndarray | dict[str, np.ndarray] | None = None, **kwargs):
