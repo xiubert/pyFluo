@@ -155,6 +155,8 @@ def qcamPath2table(exprmntPaths: list[str], format: str = 'MAK', subfolder: bool
         format (str, optional): Format for extracting dB values from pulse metadata. 
                                 - 'MAK': Matches patterns like "_XXdB_YYYmsTotal_".
                                 - 'PAC': Matches patterns like "Hz_XXdB_TestTone_YYYmsPulse_".
+                                - 'SHY': Matches patterns like "Hz_XXdB_YYYmsPulse_".
+                                - 'Auto': Searches for patterns of 'MAK'->'PAC'->'SHY' sequentially.
                                 Defaults to 'MAK'.
         subfolder (bool, optional): Whether to do recursive search for files within subfolders under "exprmntPaths".
                                     - 'True': Allows recursive search in subfolders.
@@ -202,7 +204,7 @@ def qcamPath2table(exprmntPaths: list[str], format: str = 'MAK', subfolder: bool
 
     # assume relevant pulse is first
     df['pulse'] = df['xsg'].apply(lambda x: metadataProcess.getPulseNames(x)[0])
-    df['dB'] = df['pulse'].apply(lambda x: metadataProcess.getPulseDB(x,format=format))
+    df['dB'] = df['pulse'].apply(lambda x: metadataProcess.getPulseDB(x, format=format))
 
     return df
 
