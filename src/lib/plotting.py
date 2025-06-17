@@ -187,10 +187,10 @@ def plot_respHeatmap(df: pd.DataFrame, dB_plot: int = 80, same_scale: bool = Tru
                                                - Example: (0.1, 99.9) clips the color scale to exclude the darkest 0.1% and brightest 0.1% of pixels.
                                                - If None, use min/max scaling (may reduce contrast if outliers exist).
                                                Defaults to None.
-        ROIcontour (dict, optional): ROI's vertex coordinates, including a repeated first vertex to close the shape.
-                                     Either: - 2D numpy array (same ROI for all treatments).
-                                             - Dictionary mapping treatments to 2D arrays (different ROIs for each treatment).
-                                             - None (no contours shown).
+        ROIcontour (np.ndarray | dict, optional): ROI's vertex coordinates, including a repeated first vertex to close the shape.
+                                                  Either: - 2D numpy array (same ROI for all treatments).
+                                                          - Dictionary mapping treatments to 2D arrays (different ROIs for each treatment).
+                                                          - None (no contours shown).
         **kwargs: Optional arguments that will override default.
             examples: t_baseline (tuple): start and end time points (inclusive) of baseline to plot wide-field images.
                       t_temporalAvg (tuple): start and end time points (inclusive) of response to plot response heatmaps.
@@ -264,7 +264,7 @@ def plot_respHeatmap(df: pd.DataFrame, dB_plot: int = 80, same_scale: bool = Tru
     plt.show()
 
 
-def plot_traces(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF_ROI_raw', 
+def plot_traces(df: pd.DataFrame, dB_plot: int | list[int] = 80, resp_col: str = 'dFF_ROI_raw', 
                 sepPlot: bool = False, stimStart: float = 3.0, alpha_ind: float = 0.3, **kwargs):
     """
     Plot individual and averaged traces for a given sound intensity across different treatments.
@@ -272,7 +272,9 @@ def plot_traces(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF_ROI_ra
     Args:
         df (pd.DataFrame): Metadata dataframe including columns: 
                            'dB', 'treatment', 'time' (or 'nFrames'), and column for response traces.
-        dB_plot (int, optional): Sound intensity (in dB) for traces to be plotted. Defaults to 80.
+        dB_plot (int | list, optional): Sound intensity (in dB) for traces to be plotted. Defaults to 80.
+                                        Either: - Integer representing the sound level in dB.
+                                                - List including all sound levels to be plotted.
         resp_col (str, optional): Column name for response traces. Defaults to 'dFF_ROI_raw'.
         sepPlot (bool, optional): If True, plot treatments in separate subplots; otherwise, plot in one plot. 
                                   Defaults to 'False'.
@@ -286,12 +288,22 @@ def plot_traces(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF_ROI_ra
     if not all(col in df.columns for col in required_cols):
         raise ValueError(f"DataFrame must contain the following columns: {required_cols}")
     
-    # Check whether specified sound level exists
-    if dB_plot not in df['dB'].unique():
-        raise ValueError(f"dB_plot={dB_plot} not found in the 'dB' column.")
-    
-    # Filter the DataFrame for the specified sound intensity
-    filtered_df = df[df['dB'] == dB_plot].reset_index(drop=True)
+    # Check whether specified sound level(s) exist 
+    if isinstance(dB_plot, int):
+        if dB_plot not in df['dB'].unique():
+            raise ValueError(f"dB_plot={dB_plot} not found in the 'dB' column.")
+    elif isinstance(dB_plot, list):
+        missing_dBs = [db for db in dB_plot if db not in df['dB'].unique()]
+        if missing_dBs:
+            raise ValueError(f"dB_plot contains values not found in the 'dB' column: {missing_dBs}")
+    else:
+        raise TypeError(f"dB_plot must be an int or list[int], got {type(dB_plot)}")
+
+    # Filter the DataFrame for the specified sound intensity(s)
+    if isinstance(dB_plot, int):
+        filtered_df = df[df['dB'] == dB_plot].reset_index(drop=True)
+    elif isinstance(dB_plot, list):
+        filtered_df = df[df['dB'].isin(dB_plot)].reset_index(drop=True)
     
     # Get time vectors
     if 'time' in filtered_df.columns:
@@ -385,7 +397,13 @@ def plot_traces(df: pd.DataFrame, dB_plot: int = 80, resp_col: str = 'dFF_ROI_ra
         current_ax.axvline(x=stimStart, color='k', linestyle='--')
         current_ax.legend()
     
-    fig.suptitle(f"Individual and Averaged Traces: {dB_plot} dB", size=14)
+    # Format the title based on 'dB_plot' type
+    if isinstance(dB_plot, int):
+        fig.suptitle(f"Individual and Averaged Traces: {dB_plot} dB", size=14)
+    elif isinstance(dB_plot, list):
+        dB_str = ', '.join(map(str, dB_plot))  # Convert list to comma-separated string
+        fig.suptitle(f"Individual and Averaged Traces: {dB_str} dB", size=14)
+    
     plt.tight_layout()
     plt.show()
 
@@ -1594,8 +1612,10 @@ def plot_cluster_roi(img_series: np.ndarray,
                      stimStart: float = 3, 
                      Yaxis_range: tuple[float,float] = None, 
                      plot_traces: bool = False, 
+                     alpha_traces: float = 0.2, 
                      plot_errBar: bool = False, 
-                     **kwargs):
+                     alpha_errBar: float = 0.2, 
+                     **kwargs) -> dict[str, np.ndarray]:
     """
     Plot clustered ROIs and their corresponding fluorescence traces for each cluster.
     
@@ -1616,8 +1636,15 @@ def plot_cluster_roi(img_series: np.ndarray,
         stimStart (float, optional): Stimulus start time (in seconds). Defaults to 3.0.
         Yaxis_range (tuple, optional): Set fixed Y-axis range as (y_min, y_max). If None, auto-scales Y-axis.
         plot_traces (bool, optional): Whether to plot individual traces.
+        alpha_traces (float, optional): Transparency for individual traces. Defaults to 0.2.
         plot_errBar (bool, optional): Whether to plot SEM as shading (error bars).
+        alpha_errBar (float, optional): Transparency for error bars. Defaults to 0.2.
         **kwargs: Optional keyword arguments.
+
+    Returns:
+        cluster_trace (dict): Dictionary mapping each cluster ID to the corresponding fluorescence trace
+                              (one lower dimension than input signal 'roi_trace').
+                              Example: 'CLUSTER: 1': np.ndarray
 
     Notes:
         - Individual traces or error bars can be plotted only when 'roi_trace' is 3D (multi-trial data).
@@ -1641,34 +1668,43 @@ def plot_cluster_roi(img_series: np.ndarray,
     # Get the time vector
     t = signalProcess.getTimeVec(img_series.shape[-1], **kwargs)
 
+    # Initialize a dictionary to store traces of each cluster
+    cluster_trace = {}
+    
     for cluster_color, cluster_d in color_map.items():
         fig, ax = plt.subplots(1, 2, figsize=(15, 5))
+        cluster_name = f"CLUSTER: {cluster_d['cluster_id']}"
 
         # Display corresponding ROIs against wide-field image by adding contrast
         ax[0].imshow((masks[leaf_order[leaves_color_list==cluster_color]].sum(axis=0) + background_contrast)*img_series.mean(axis=-1))
 
         # Average fluorescence traces across corresponding ROIs
-        roi_trace_avgROI = roi_trace[:, leaf_order[leaves_color_list==cluster_color]].mean(axis=-2) if roi_trace.ndim == 3 \
-                           else roi_trace[leaf_order[leaves_color_list==cluster_color]].mean(axis=-2)
+        roi_trace_cluster = roi_trace[:, leaf_order[leaves_color_list==cluster_color]].mean(axis=-2) if roi_trace.ndim == 3 \
+                            else roi_trace[leaf_order[leaves_color_list==cluster_color]].mean(axis=-2)
 
+        # Add fluorescence traces into dictionary
+        cluster_trace[cluster_name] = roi_trace_cluster
+        
         # Average fluorescence traces across trials if input trace array is 3D
-        roi_trace_avg = np.mean(roi_trace_avgROI, axis=0) if roi_trace.ndim == 3 else roi_trace_avgROI
+        roi_trace_cluster_avg = np.mean(roi_trace_cluster, axis=0) if roi_trace.ndim == 3 else roi_trace_cluster
 
-        ax[1].plot(t, roi_trace_avg)
+        ax[1].plot(t, roi_trace_cluster_avg)
         ax[1].set_ylabel('Fluorescence Intensity', fontsize=14)
         ax[1].set_xlabel('time (s)', fontsize=14)
         ax[1].axvline(x=stimStart, color='k', linestyle='--')
-        fig.suptitle(f"CLUSTER: {cluster_d['cluster_id']}", color=cluster_d['cluster_color'], fontsize=18, fontweight='bold')
+        fig.suptitle(cluster_name, color=cluster_d['cluster_color'], fontsize=18, fontweight='bold')
         
         if plot_traces is True and roi_trace.ndim == 3:
             # Plot individual traces only when input array includes multiple trials
-            ax[1].plot(t, roi_trace_avgROI.T, color='gray', alpha=0.2)
+            ax[1].plot(t, roi_trace_cluster.T, color='gray', alpha=alpha_traces)
         
         if plot_errBar is True and roi_trace.ndim == 3:
             # Plot error bars only when input array includes multiple trials
-            _, uFpsem, uFmsem = signalProcess.meanPlusMinusSem(roi_trace_avgROI)
-            ax[1].fill_between(t, uFpsem, uFmsem, alpha=0.2)
+            _, uFpsem, uFmsem = signalProcess.meanPlusMinusSem(roi_trace_cluster)
+            ax[1].fill_between(t, uFpsem, uFmsem, alpha=alpha_errBar)
 
         if Yaxis_range is not None:
             ax[1].set_ylim(Yaxis_range)
+
+    return cluster_trace
 

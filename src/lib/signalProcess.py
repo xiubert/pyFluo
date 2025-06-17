@@ -44,6 +44,31 @@ def getTimeVec(nFrames: int,
     return t
 
 
+def computeFFT(signal: np.ndarray, sample_freq: int = 20) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Simple helper function to compute the Fast Fourier Transform (FFT) of a signal.
+    Returns positive frequencies and their magnitudes.
+
+    Args:
+        signal (numpy.ndarray): 1D signal array of shape [frame].
+        sample_freq (int, optional): Sampling frequency of the signal in Hz.
+    
+    Returns:
+        A tuple containing two arrays:
+            - freqs (numpy.ndarray): Array of positive frequency bins in Hz.
+            - fft_vals (numpy.ndarray): Magnitude spectrum of the FFT (absolute values).
+    
+    Notes:
+        - For real-valued input signals, the FFT is symmetric so negative frequencies are discarded.
+        - Only returns the positive frequency components (first half of the FFT).
+        - Nyquist frequency (maximum detectable frequency) is sample_freq/2.
+    """
+    n = signal.shape[-1]
+    fft_vals = np.fft.fft(signal)  # Compute FFT (returns complex values)
+    freqs = np.fft.fftfreq(n, d=1/sample_freq)  # Generate frequency bins
+    return freqs[:n//2], np.abs(fft_vals[:n//2])  # Return only positive frequencies
+
+
 def butterFilter(signal: np.ndarray, 
                  sample_freq: int = 20, 
                  cutoff_freq: int = 5, 
@@ -54,8 +79,8 @@ def butterFilter(signal: np.ndarray,
 
     Args:
         signal (numpy array): 1D or 2D signal array to be filtered of shape [frame] or [traceNumber, frame]
-        sample_freq (int): sampling frequency of the signal
-        cutoff_freq (float): filter cutoff frequency
+        sample_freq (int): sampling frequency of the signal in Hz
+        cutoff_freq (float): filter cutoff frequency in Hz
         order (int): filter order ('steepness' of signal drop-off at cutoff_freq)
         **kwargs: Optional arguments that will override default.
 
@@ -525,7 +550,7 @@ def meanPlusMinusSem(traceXtimeArray: np.ndarray) -> Tuple[np.ndarray, np.ndarra
 
 def updateTable_signal(df: pd.DataFrame, qcam2img: dict, mask_name: str = 'response_mask', 
                        t_base: tuple = (2.0, 3.0), t_resp: tuple = (3.3, 4.0), cutoff_freq: float = 2, 
-                       add_processed_data: bool = True, **kwargs):
+                       add_filtered_data: bool = True, test_negative: bool = True, **kwargs):
     """
     Update metadata dataframe with raw and processed signals within ROI.
 
@@ -536,21 +561,26 @@ def updateTable_signal(df: pd.DataFrame, qcam2img: dict, mask_name: str = 'respo
         t_base (tuple, optional): Baseline time window. Defaults to (2.0, 3.0).
         t_resp (tuple, optional): Response time window. Defaults to (3.3, 4.0).
         cutoff_freq (float, optional): Low-pass filter cutoff frequency. Defaults to 2.
-        add_processed_data (bool, optional): Whether to add columns including processed data: 
-                                             'F_ROI_linFilt_butterFilt', 'f0_ROI_linFilt_butterFilt', 
-                                             'dF_ROI_linFilt_butterFilt', 'dF_ROI_linFilt_butterFilt_peak', 
-                                             'dFF_ROI_linFilt_butterFilt', 'dFF_ROI_linFilt_butterFilt_peak', 'valid'.
+        add_filtered_data (bool, optional): Whether to add columns including processed data after applying low-pass filter: 
+                                            'F_ROI_linFilt_butterFilt', 'f0_ROI_linFilt_butterFilt', 
+                                            'dF_ROI_linFilt_butterFilt', 'dF_ROI_linFilt_butterFilt_peak', 
+                                            'dFF_ROI_linFilt_butterFilt', 'dFF_ROI_linFilt_butterFilt_peak'.
+        test_negative (bool, optional): Whether to add column 'valid' to indicate negative traces.
         **kwargs: Optional arguments that will override default.
-            example: stimStart (float, optional): Stimulus start time (in seconds) by default. Defaults to 3.
+            example: byXSG (bool, optional): Whether to adjust baseline and response time windows according to XSG files.
+                                             Defaults to 'False'.
+                     stimStart (float, optional): Stimulus start time (in seconds) by default. Defaults to 3.
 
     Returns:
         df_updated (pd.DataFrame): Updated metadata dataframe including new columns:
                                    'ROImask', 'time', 'baseWindow', 'respWindow', 
-                                   'F_ROI_raw', 'F_ROI_linFilt_butterFilt', 
-                                   'f0_ROI_raw', 'f0_ROI_linFilt_butterFilt', 
+                                   'F_ROI_raw', 'F_ROI_linFilt', 'F_ROI_linFilt_butterFilt', 
+                                   'f0_ROI_raw', 'f0_ROI_linFilt', 'f0_ROI_linFilt_butterFilt', 
                                    'dF_ROI_raw', 'dF_ROI_raw_peak', 
+                                   'dF_ROI_linFilt', 'dF_ROI_linFilt_peak', 
                                    'dF_ROI_linFilt_butterFilt', 'dF_ROI_linFilt_butterFilt_peak', 
                                    'dFF_ROI_raw', 'dFF_ROI_raw_peak', 
+                                   'dFF_ROI_linFilt', 'dFF_ROI_linFilt_peak', 
                                    'dFF_ROI_linFilt_butterFilt', 'dFF_ROI_linFilt_butterFilt_peak', 
                                    'valid'.
     
@@ -620,21 +650,22 @@ def updateTable_signal(df: pd.DataFrame, qcam2img: dict, mask_name: str = 'respo
     # Add fluorescence trace (F) within ROI
     # Raw data
     df_updated['F_ROI_raw'] = df_updated.apply(lambda x: qcam2img[x['qcam']][x['ROImask']==1, :].mean(axis=0), axis=1)
-    if add_processed_data:
+    # Subtracted linear fit
+    df_updated['F_ROI_linFilt'] = df_updated.apply(lambda x: subtractLinFit(x['time'], x['F_ROI_raw'], t_base=x['baseWindow'], **kwargs)[0], axis=1)
+    if add_filtered_data:
         # Processed data (subtracted linear fit and added low-pass filter)
-        df_updated['F_ROI_linFilt_butterFilt'] = df_updated.apply(
-            lambda x: butterFilter(
-                subtractLinFit(x['time'], x['F_ROI_raw'], t_base=x['baseWindow'], **kwargs)[0], cutoff_freq=cutoff_freq, **kwargs
-            ), 
-            axis=1
-        )
+        df_updated['F_ROI_linFilt_butterFilt'] = df_updated['F_ROI_linFilt'].apply(lambda x: butterFilter(x, cutoff_freq=cutoff_freq, **kwargs))
 
     # Add baseline fluorescence (f0) within ROI
     # Raw data
     df_updated['f0_ROI_raw'] = df_updated.apply(
         lambda x: getBaseResp(x['F_ROI_raw'], x['time'], t_base=x['baseWindow'], **kwargs)[0], axis=1
     )
-    if add_processed_data:
+    # Subtracted linear fit
+    df_updated['f0_ROI_linFilt'] = df_updated.apply(
+        lambda x: getBaseResp(x['F_ROI_linFilt'], x['time'], t_base=x['baseWindow'], **kwargs)[0], axis=1
+    )
+    if add_filtered_data:
         # Processed data (subtracted linear fit and added low-pass filter)
         df_updated['f0_ROI_linFilt_butterFilt'] = df_updated.apply(
             lambda x: getBaseResp(x['F_ROI_linFilt_butterFilt'], x['time'], t_base=x['baseWindow'], **kwargs)[0], axis=1
@@ -650,7 +681,16 @@ def updateTable_signal(df: pd.DataFrame, qcam2img: dict, mask_name: str = 'respo
         ), 
         axis=1
     )
-    if add_processed_data:
+    # Subtracted linear fit
+    df_updated['dF_ROI_linFilt'] = df_updated.apply(lambda x: x['F_ROI_linFilt'] - x['f0_ROI_linFilt'], axis=1)
+    df_updated['dF_ROI_linFilt_peak'] = df_updated.apply(
+        lambda x: pkDFFimg(
+            qcam2img[x['qcam']], ROImask=x['ROImask'], butterFilt=False, 
+            dFResp=True, negExcl=False, t_base=x['baseWindow'], t_resp=x['respWindow'], **kwargs
+        ), 
+        axis=1
+    )
+    if add_filtered_data:
         # Processed data (subtracted linear fit and added low-pass filter)
         df_updated['dF_ROI_linFilt_butterFilt'] = df_updated.apply(
             lambda x: x['F_ROI_linFilt_butterFilt'] - x['f0_ROI_linFilt_butterFilt'], axis=1
@@ -673,7 +713,16 @@ def updateTable_signal(df: pd.DataFrame, qcam2img: dict, mask_name: str = 'respo
         ), 
         axis=1
     )
-    if add_processed_data:
+    # Subtracted linear fit
+    df_updated['dFF_ROI_linFilt'] = df_updated.apply(lambda x: x['dF_ROI_linFilt'] / x['f0_ROI_linFilt'], axis=1)
+    df_updated['dFF_ROI_linFilt_peak'] = df_updated.apply(
+        lambda x: pkDFFimg(
+            qcam2img[x['qcam']], ROImask=x['ROImask'], butterFilt=False, 
+            negExcl=False, t_base=x['baseWindow'], t_resp=x['respWindow'], **kwargs
+        ), 
+        axis=1
+    )
+    if add_filtered_data:
         # Processed data (subtracted linear fit and added low-pass filter)
         df_updated['dFF_ROI_linFilt_butterFilt'] = df_updated.apply(
             lambda x: x['dF_ROI_linFilt_butterFilt'] / x['f0_ROI_linFilt_butterFilt'], axis=1
@@ -686,6 +735,7 @@ def updateTable_signal(df: pd.DataFrame, qcam2img: dict, mask_name: str = 'respo
             axis=1
         )
 
+    if test_negative:
         # Identify whether each trace is an outlier with negative response (`False`)
         # Test sign of peak dFF response only, as the result is the same for peak dF response
         # Time window for exclusive thresholds is suggested overlapping with response time window
