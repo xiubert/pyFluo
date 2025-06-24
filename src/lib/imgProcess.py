@@ -905,7 +905,7 @@ def mask2trace(mask: np.ndarray, imgs: np.ndarray, spatialDFF: np.ndarray = None
     return ROIimg
 
 
-def get_roi_sweep_masks(img_series: np.ndarray, roi_size: int = 10, shift: int = 5, 
+def get_roi_sweep_masks(img_series: np.ndarray, roi_size: int = 10, shift: int = 5, input_mask: np.ndarray = None, 
                         plot_roi: tuple = (10, 10)) -> tuple[np.ndarray, list, list]:
     """
     Generates and visualizes a grid of ROI masks swept across an image series.
@@ -917,6 +917,8 @@ def get_roi_sweep_masks(img_series: np.ndarray, roi_size: int = 10, shift: int =
         img_series (np.ndarray): 3D or 4D image array of shape [Y, X, frame] or [traceNumber, Y, X, frame].
         roi_size (int, optional): Size of the square ROI in pixels.
         shift (int, optional): Step size (in pixels) for moving the ROI across the image.
+        input_mask (np.ndarray): 2D binary mask within which sweeping ROI masks are generated.
+                                 If 'None', generate ROI masks sweeping across the whole image.
         plot_roi (tuple, optional): Number of masks to visualize in (rows, cols) format. 
                                     If 'None', disable mask visualization.
 
@@ -931,16 +933,28 @@ def get_roi_sweep_masks(img_series: np.ndarray, roi_size: int = 10, shift: int =
     if img_series.ndim not in (3, 4):
         raise ValueError("Image array must be 3D or 4D.")
     
+    if input_mask is not None:
+        # Find the bounding box of True values in the input binary mask
+        rows, cols = np.where(input_mask)
+        if len(rows) == 0:
+            raise ValueError("No True values found in the binary mask.")
+        min_Y, max_Y = np.min(rows), np.max(rows) - roi_size + 1
+        min_X, max_X = np.min(cols), np.max(cols) - roi_size + 1
+    else:
+        # Sweep ROI masks across the whole field
+        min_Y, max_Y = 0, img_series.shape[-3] - roi_size + 1
+        min_X, max_X = 0, img_series.shape[-2] - roi_size + 1
+    
     # Create empty lists to store masks and coordinates
     masks = []
     x_roi = []
     y_roi = []
 
     # Generate ROI masks
-    for y in range(0, img_series.shape[-3] - roi_size + 1, shift):
-        for x in range(0, img_series.shape[-2] - roi_size + 1, shift):
+    for y in range(min_Y, max_Y, shift):
+        for x in range(min_X, max_X, shift):
             mask = np.zeros(img_series.shape[:-1], dtype=bool) if img_series.ndim == 3 \
-                   else np.zeros(img_series.shape[1:-1], dtype=bool)
+                   else np.zeros(img_series.shape[-3:-1], dtype=bool)
             mask[y:y + roi_size, x:x + roi_size] = True
             masks.append(mask)
             x_roi.append(x)
