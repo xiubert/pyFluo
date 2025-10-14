@@ -36,11 +36,11 @@ def getTimeVec(nFrames: int,
     zeroStart = kwargs.get('zeroStart', zeroStart)
     delayAdjust = kwargs.get('delayAdjust', delayAdjust)
 
-    # first frame acquired (1/fr) s after start
-    t = (np.arange(1, nFrames + 1) * (1 / frameRate)) + delayAdjust
     # first frame acquired at start (starts at 0)
-    if zeroStart:
-        return t-(1/frameRate)
+    t = (np.arange(nFrames) / frameRate) + delayAdjust
+    
+    if not zeroStart:   # first frame acquired (1/fr) s after start
+        t += 1/frameRate
     return t
 
 
@@ -104,6 +104,11 @@ def butterFilter(signal: np.ndarray,
         filtered_signal = np.zeros_like(signal)
         for i in range(signal.shape[0]):
             filtered_signal[i, :] = filtfilt(b, a, signal[i, :])
+    elif signal.ndim == 3:
+        filtered_signal = np.zeros_like(signal)
+        for i in range(signal.shape[0]):
+            for j in range(signal.shape[1]):
+                filtered_signal[i,j,:] = filtfilt(b, a, signal[i,j,:])
     else:
         raise ValueError("Signal array must be 1D or 2D.")
     

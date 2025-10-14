@@ -22,7 +22,7 @@ from lib.fileIngest import extract_qcamraw, qcams2imgs
 Functions for processing imaging signals.
 """
 
-def calcSpatialBaseFluo(imgSeries: np.ndarray, t_baseAvg: tuple[float,float] = (1,3), **kwargs) -> np.ndarray:
+def calcSpatialBaseFluo(imgSeries: np.ndarray, t_baseAvg: tuple[float,float] = (2,3), **kwargs) -> np.ndarray:
     """
     Calculate spatial baseline fluorescence (at each pixel).
 
@@ -41,7 +41,7 @@ def calcSpatialBaseFluo(imgSeries: np.ndarray, t_baseAvg: tuple[float,float] = (
     t = getTimeVec(imgSeries.shape[2], **kwargs)
 
     # Reshape to 2D: (number of pixels, time points)
-    baselineIDX = np.where((t>=t_baseAvg[0]) & (t<=t_baseAvg[1]))[0]
+    baselineIDX = np.asarray((t>=t_baseAvg[0]) & (t<=t_baseAvg[1])).nonzero()[0]
     spatialBaseFluo = imgSeries[:,:,baselineIDX].mean(axis=2)
 
     return spatialBaseFluo
@@ -75,22 +75,18 @@ def calcSpatialDFFresp(imgSeries: np.ndarray,
     # get time array
     t = getTimeVec(imgSeries.shape[2], **kwargs)
 
-    # Reshape to 2D: (number of pixels, time points)
-    reshaped_data = imgSeries.reshape(-1, imgSeries.shape[2])
-    baselineIDX = np.where((t>=t_baseline[0]) & (t<=t_baseline[1]))[0]
-    spatialbase = reshaped_data[:,baselineIDX].mean(axis=1).reshape(-1,1)
-    spatialDFF = (reshaped_data-spatialbase)/spatialbase
-    
+
+    baselineIDX = np.asarray((t>=t_baseline[0]) & (t<=t_baseline[1])).nonzero()[0]
+    spatialbase = imgSeries[:,:,baselineIDX].mean(axis=2)
+    spatialDFF = (imgSeries - spatialbase[:,:,np.newaxis])/spatialbase[:,:,np.newaxis]
     spatialDFF = butterFilter(spatialDFF,**kwargs)
 
     if t_temporalAvg is None:
         frameRate = kwargs.get('frameRate', 20)
         t_temporalAvg = (t_baseline[1]+stimlen,t_baseline[1]+stimlen+temporalAvgFrameSpan*(1/frameRate))
 
-    spatialDFFresp = spatialDFF[:,np.where((t>=t_temporalAvg[0]) &
-                                        (t<=t_temporalAvg[1]))[0]]\
-                                            .mean(axis=1).reshape(*imgSeries.shape[:2])
-
+    spatialDFFresp = spatialDFF[:,:,np.asarray((t>=t_temporalAvg[0]) & (t<=t_temporalAvg[1])).nonzero()[0]].mean(axis=2)
+    
     return spatialDFFresp
 
 

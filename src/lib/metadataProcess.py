@@ -9,7 +9,7 @@ from glob import glob
 Functions for extracting metadata.
 """
 
-def getPulseNames(xsgPath: str):
+def getPulseNames(xsgPath: str) -> list:
     """
     Extracts pulse names from an XSG file.
 
@@ -24,12 +24,12 @@ def getPulseNames(xsgPath: str):
           `header -> stimulator -> stimulator -> pulseNameArray`.
     """
     xsg = loadmat(xsgPath)
-    arr = xsg['header']['stimulator'][0,0]['stimulator'][0,0]['pulseNameArray'][0,0][:,0]
+    arr = xsg['header'][0,0]['stimulator'][0,0]['stimulator'][0,0]['pulseNameArray'][:,0]
 
-    return np.concatenate(arr).tolist()
+    return [row[0] for row in arr if row.size > 0]
     
 
-def getPulseSets(xsgPath: str):
+def getPulseSets(xsgPath: str) -> list:
     """
     Extracts pulse set names from an XSG file.
 
@@ -44,56 +44,26 @@ def getPulseSets(xsgPath: str):
           `header -> stimulator -> stimulator -> pulseSetNameArray`.
     """
     xsg = loadmat(xsgPath)
-    arr = xsg['header']['stimulator'][0,0]['stimulator'][0,0]['pulseSetNameArray'][0,0][:,0]
+    arr = xsg['header'][0,0]['stimulator'][0,0]['stimulator'][0,0]['pulseSetNameArray'][:,0]
 
-    return np.concatenate(arr).tolist()
+    return [row[0] for row in arr if row.size > 0]
 
 
-def getPulseDB(pulse: str, format: str = 'MAK'):
+def getPulseDB(pulse: str):
     """
-    Extracts the decibel (dB) value from a pulse string based on the specified format.
+    Extracts the decibel (dB) value from a pulse string.
 
     Args:
         pulse (str): The pulse string containing decibel information.
-        format (str, optional): The format of the pulse string. Default is 'MAK'.
-                                - 'MAK': Matches patterns like "_XXdB_YYYmsTotal_"
-                                - 'PAC': Matches patterns like "Hz_XXdB_TestTone_YYYmsPulse_"
-                                - 'SHY': Matches patterns like "Hz_XXdB_YYYmsPulse_"
-                                - 'Auto': Searches for patterns of 'MAK'->'PAC'->'SHY' sequentially.
-                                - Other formats return None.
-
+        
     Returns:
         int or None: The decibel (dB) value as an integer if found; otherwise, None.
-
-    Raises:
-        AttributeError: If the pulse string does not contain a match for the given format.
-
-    Notes:
-        - For 'MAK' format, the regex pattern looks for "_XXdB_YYYmsTotal_".
-        - For 'PAC' format, the regex pattern looks for "Hz_XXdB_TestTone_YYYmsPulse_".
-        - For 'SHY' format, the regex pattern looks for "Hz_XXdB_YYYmsPulse_".
-        - For 'Auto' format, the regex pattern looks for 'MAK'->'PAC'->'SHY' formats sequentially.
-        - Returns `None` if the format is not recognized or no match is found.
-    """
-    if format=='Auto':
-        # Try each format in order
-        for fmt in ['MAK', 'PAC', 'SHY']:
-            result = getPulseDB(pulse, fmt)
-            if result is not None:
-                return result
-        return None
-    
-    if format=='MAK':
-        dBre = re.compile(r'_(\d{1,3})dB_\d{2,5}msTotal_')
-    elif format=='PAC':
-        dBre = re.compile(r'Hz_(\d{2,3})dB_TestTone_\d{2,5}msPulse_')
-    elif format=='SHY':
-        dBre = re.compile(r'Hz_(\d{1,3})dB_\d{2,5}msPulse_')
+    """    
+    dBre = re.compile(r'\d+(?=dB)')
+    dBsearch = re.search(dBre,pulse)
+    if dBsearch:
+        return int(dBsearch.group())
     else:
-        return None
-    try:
-        return int(re.search(dBre,pulse).group(1))
-    except AttributeError:
         return None
     
 

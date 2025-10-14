@@ -47,7 +47,7 @@ class Experiment:
             self.qcam2header = self.parent.qcam2header  # Shared reference
         else:
             # If standalone, create its own DataFrame and storage
-            self.df = fileIngest.qcamPath2table([self.directory], self.format, self.subfolder)
+            self.df = fileIngest.qcamPath2table([self.directory], self.subfolder)
             if drop_missing_dB:
                 self.df = self.df[~self.df['dB'].isna()]
             # Load treatment / injection metadata

@@ -140,24 +140,18 @@ def qcams2imgs(qFiles: list, consistentFrameCt: bool = True) -> tuple[list[np.nd
     if consistentFrameCt:
         # exclude files where framecount is not most common
         nFrames = [i.shape[2] for i in imgs]
-        nFrames = max(nFrames, key=nFrames.count)
+        nFrames = max(set(nFrames), key=nFrames.count)
         imgs,headers = zip(*[(i,h) for i,h in zip(imgs,headers) if i.shape[2]==nFrames])
 
     return imgs,headers
 
 
-def qcamPath2table(exprmntPaths: list[str], format: str = 'MAK', subfolder: bool = False) -> pd.DataFrame:
+def qcamPath2table(exprmntPaths: list[str], subfolder: bool = False) -> pd.DataFrame:
     """
     Generates a DataFrame mapping qcam files to corresponding XSG files and pulse metadata.
 
     Args:
         exprmntPaths (list[str]): List of experiment directory paths to search for `.qcamraw` files.
-        format (str, optional): Format for extracting dB values from pulse metadata. 
-                                - 'MAK': Matches patterns like "_XXdB_YYYmsTotal_".
-                                - 'PAC': Matches patterns like "Hz_XXdB_TestTone_YYYmsPulse_".
-                                - 'SHY': Matches patterns like "Hz_XXdB_YYYmsPulse_".
-                                - 'Auto': Searches for patterns of 'MAK'->'PAC'->'SHY' sequentially.
-                                Defaults to 'MAK'.
         subfolder (bool, optional): Whether to do recursive search for files within subfolders under "exprmntPaths".
                                     - 'True': Allows recursive search in subfolders.
                                     - 'False': Not allows recursive search in subfolders.
@@ -179,7 +173,7 @@ def qcamPath2table(exprmntPaths: list[str], format: str = 'MAK', subfolder: bool
 
     Examples:
         >>> exprmntPaths = ['exp1', 'exp2']
-        >>> df = qcamPath2table(exprmntPaths, format='MAK')
+        >>> df = qcamPath2table(exprmntPaths)
         >>> print(df)
                      qcam   dir                         xsg           pulse   dB
         0  exp1/file1.qcamraw  exp1  exp1/file1.xsg  PulseName1   75
@@ -204,7 +198,7 @@ def qcamPath2table(exprmntPaths: list[str], format: str = 'MAK', subfolder: bool
 
     # assume relevant pulse is first
     df['pulse'] = df['xsg'].apply(lambda x: metadataProcess.getPulseNames(x)[0])
-    df['dB'] = df['pulse'].apply(lambda x: metadataProcess.getPulseDB(x, format=format))
+    df['dB'] = df['pulse'].apply(lambda x: metadataProcess.getPulseDB(x))
 
     return df
 
@@ -266,7 +260,7 @@ def loadQCamTable(df: pd.DataFrame, exclude_non_loop_trials: bool = False, loop_
 
     if exclude_non_loop_trials:
         # Remove first few pre-exposing trials before the loop for each animal and treatment
-        def remove_preExposeTrial(df_group):
+        def remove_preExposeTrial(df_group: pd.DataFrame):
             # Calculate time gaps (in seconds) between adjacent trials
             df_group['time_diff'] = df_group['timestamp_init'].diff().dt.total_seconds()
             
