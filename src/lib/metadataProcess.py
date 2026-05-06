@@ -1,8 +1,10 @@
-from scipy.io import loadmat
 import re
 import pandas as pd
 import numpy as np
 import os
+import warnings
+
+from scipy.io import loadmat
 from glob import glob
 
 """
@@ -112,7 +114,7 @@ def getInjectionCond(df: pd.DataFrame) -> list:
     treatment_labels = []
     ZX1fileNameRegex = r'[A-Z]{2}\d{4}(?=.*[ZX])[A-Z]{4}\d{4}'
     
-    for exp_dir, group in df.groupby('dir'):
+    for exp_dir, group in df.groupby('dir', sort=False):
         # Check for ZXXX qcam files indicating a ZX1 injection treatment
         if group['qcam'].str.contains(ZX1fileNameRegex, regex=True).any():
             for _, row in group.iterrows():
@@ -145,7 +147,7 @@ def getInjectionCond(df: pd.DataFrame) -> list:
 
 
 def getBaseRespWindow(df: pd.DataFrame, t_base: tuple = (2.0, 3.0), t_resp: tuple = (3.3, 4.0), 
-                      byXSG: bool = False, stimStart: float = 3.0, **kwargs) -> dict:
+                      byXSG: bool = False, stimStart: float = 3.0, **kwargs) -> dict[str, list[tuple]]:
     """
     Returns a dictionary containing two lists: 'baseWindow' and 'respWindow' for files (rows) in the DataFrame.
     Adjust time windows automatically based on corresponding XSG files or file 'STIMULUS_START_*_sec*' in the same directory.
@@ -234,3 +236,152 @@ def getBaseRespWindow(df: pd.DataFrame, t_base: tuple = (2.0, 3.0), t_resp: tupl
     time_windows = {'baseWindow': base_windows, 'respWindow': resp_windows}
 
     return time_windows
+
+
+def getOddballPosition(matPath: str, deviantIndex: int = 2) -> dict[str, np.ndarray]:
+    """
+    Extracts positions of deviant tones in the stimulus sequence for the oddball paradigm.
+
+    Args:
+        matPath (str): Path to the MAT file (MATLAB .mat format) containing oddball stimulus data.
+        deviantIndex (int): Value representing deviant tones in the stimulus sequence.
+                            By default, standard tones are represented by 1 while deviant tones are represented by 2.
+
+    Returns:
+        deviant_pos_dict (dict): A dictionary of deviant tone positions extracted from the 'stimVec' field of the MAT file.
+                                 String keys match their indices in MATLAB.
+
+    Notes:
+        - This function assumes the MAT file has a specific structure with fields:
+          `oddballs -> stimVec`.
+    """
+
+    mat = loadmat(matPath)
+    stimVec = mat['oddballs']['stimVec'][0,0]
+    deviant_pos_dict = {}
+
+    for i in range(stimVec.shape[0]):
+        # Extract deviant tone positions in each stimulus train
+        oddball_pos = np.where(stimVec[i,:] == deviantIndex)[0]
+        # Convert keys to 1-indexed (match MATLAB)
+        deviant_pos_dict[f'{i+1}'] = oddball_pos
+
+    return deviant_pos_dict
+
+
+def getDFFtraces(matPath: str) -> tuple[list, np.ndarray, list, np.ndarray]:
+    """
+    Extracts MATLAB-processed 2-photon data from a response summary file.
+
+    Args:
+        matPath (str): Path to the MATLAB .mat file (usually ends with '_Responses.mat') containing 2-photon data.
+
+    Returns:
+        levelLabel (list): A list of sound level labels extracted from the the 'soundLevels' field of the MATLAB file.
+        timeVector (np.ndarray): A 1D NumPy array representing the time vector (in seconds) for the dF/F traces.
+                                 Sound onset is at 1 second.
+        respIndex (list): A list of responsive neuron indices extracted from the 'ResponsiveNeuronsInd' field of the MATLAB file.
+        dFFtraces (np.ndarray): A 4D NumPy array of shape [neuronNumber, soundLevel, traceNumber, frame] containing the dF/F traces.
+
+    Notes:
+        - This function assumes the MATLAB file has a specific structure with fields:
+          `responseDataSaved -> soundLevels`, `responseDataSaved -> timeSnip`, 
+          `responseDataSaved -> ResponsiveNeuronsInd` and `responseDataSaved -> thisTraceDFOverF`.
+    """
+    
+    # Maps MATLAB structs to Python objects with dot-access
+    mat = loadmat(matPath, struct_as_record=False, squeeze_me=True)
+
+    responseData = mat['responseDataSaved']
+    levelLabel = responseData.soundLevels.flatten().tolist()
+    timeVector = responseData.timeSnip.flatten()
+
+    # Python is 0-based indexing, MATLAB is 1-based indexing
+    respIndex = [x-1 for x in responseData.ResponsiveNeuronsInd.flatten().tolist()]
+
+    # Access the nested cell structure of dF/F fluorescence values
+    thisTraceDFOverF = responseData.thisTraceDFOverF
+
+    # Determine dimensions
+    neuron_count = len(thisTraceDFOverF)
+    soundLevel_count = len(thisTraceDFOverF[0])
+    trace_count, frame_count = thisTraceDFOverF[0][0].shape
+
+    # Initialize 4D array
+    dFFtraces = np.zeros((neuron_count, soundLevel_count, trace_count, frame_count))
+
+    for n in range(neuron_count):
+        for s in range(soundLevel_count):
+            dFFtraces[n, s, :, :] = thisTraceDFOverF[n][s]
+
+    print(f"Extracted dF/F traces [neuronNumber, soundLevel, traceNumber, frame] of shape: {dFFtraces.shape}")
+
+    return levelLabel, timeVector, respIndex, dFFtraces
+
+
+def getRawFluoWholeTraces(matPath: str) -> tuple[list, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Extracts raw 2-photon whole fluorescence traces from MATLAB rawFluoWholeTraces.mat file.
+
+    Args:
+        matPath (str): Path to the MATLAB .mat file (usually ends with '_rawFluoWholeTraces.mat') containing 2-photon data.
+
+    Returns:
+        levelOrder (list): A list of sound level labels maintained in the original sequence.
+        timeVector (np.ndarray): A 1D NumPy array representing the time vector (in seconds) for the raw whole fluorescence traces.
+                                 frameRate is 5.0080 Hz based on tiff files.
+        soundOnsets (np.ndarray): A 1D NumPy array representing the sound onset time points (in seconds).
+        rawFluoWholeTraces (np.ndarray): A 3D NumPy array of shape [traceNumber, neuronNumber, frame] containing the raw whole fluorescence traces.
+
+    Notes:
+        - This function assumes the MATLAB file has a specific structure with fields:
+          `rawFluoWholeTracesSaved -> levelOrder`, `rawFluoWholeTracesSaved -> timeVector`, 
+          `rawFluoWholeTracesSaved -> soundOnsets` and `rawFluoWholeTracesSaved -> rawFluoWholeTraces`.
+    """
+    
+    # Maps MATLAB structs to Python objects with dot-access
+    mat = loadmat(matPath, struct_as_record=False, squeeze_me=True)
+
+    rawFluoWholeTracesSaved = mat['rawFluoWholeTracesSaved']
+    levelOrder = [int(x) for x in rawFluoWholeTracesSaved.levelOrder]
+    timeVector = rawFluoWholeTracesSaved.timeVector
+    soundOnsets = rawFluoWholeTracesSaved.soundOnsets
+    rawFluoWholeTraces = rawFluoWholeTracesSaved.rawFluoWholeTraces
+
+    print(f"Extracted raw whole fluorescence traces [traceNumber, neuronNumber, frame] of shape: {rawFluoWholeTraces.shape}")
+
+    return levelOrder, timeVector, soundOnsets, rawFluoWholeTraces
+
+
+def getPulseFreqs(freqArray: np.ndarray[str] | list[str], freqRegex: str) -> list[int]:
+    """
+    Extracts unique frequencies (as integers) from an array of pulse strings using a regex pattern.
+
+    Args:
+        freqArray (np.ndarray | list): An array or list of pulse strings containing frequencies.
+        freqRegex (str): Regex pattern to extract frequency from pulse strings.
+    
+    Returns:
+        freq_list (list): Sorted list of unique frequency values.
+    """
+
+    # Initialize an empty list and set for unique frequencies
+    freq_list = []
+    freq_set = set()
+
+    for pulse in freqArray:
+        try:
+            # Convert str to int
+            freq_str = int(re.search(freqRegex, pulse).group(1))
+            if freq_str not in freq_set:
+                # Keep unique frequencies only
+                freq_set.add(freq_str)
+                freq_list.append(freq_str)
+        except AttributeError:
+            warnings.warn(f"Could not extract frequency from: {pulse}")
+
+    # Sort the frequency list in ascending order
+    freq_list.sort()
+
+    return freq_list
+    

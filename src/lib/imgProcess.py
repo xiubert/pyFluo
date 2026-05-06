@@ -115,6 +115,50 @@ def getImgEdges(img: np.ndarray) -> np.ndarray:
     return edges
 
 
+def blurImg(freq2dFFresp: dict, ksize: tuple = (7, 7), mask: np.ndarray = None) -> tuple[dict, dict]:
+    """
+    Helper function to apply Gaussian blur and normalization to spatialDFF images.
+
+    Args:
+        freq2dFFresp (dict): Dictionary mapping frequency to 
+                             tuple(raw spatialDFF image of shape (Y, X), 
+                                   subset DataFrame at the frequency).
+        ksize (tuple, optional): Kernel size for Gaussian blur. 
+                                 Suggested minimal size (7, 7) to effectively reduce noise (default).
+                                 A larger size (e.g., (15, 15)) is suggested for stronger noise reduction.
+        mask (np.ndarray, optional): Binary mask to filter pixels in flattened arrays in 'freq2dFFrespArray'.
+                                     Will not affect 'freq2dFFrespImg'.
+                                     If None, no mask is applied and arrays in 'freq2dFFrespArray' include all pixels.
+                                     Defaults to None.
+
+    Returns:
+        tuple[dict, dict]: 
+            - freq2dFFrespImg: Dictionary mapping frequency to blurred, normalized spatialDFF images (2D array of shape (Y, X)).
+            - freq2dFFrespArray: Dictionary mapping frequency to blurred, normalized and flattened spatialDFF within mask (1D array).
+    """
+
+    # Initialize dictionaries to store blurred and normalized images/flattened arrays
+    freq2dFFrespImg, freq2dFFrespArray = {}, {}
+
+    for freq in freq2dFFresp.keys():
+        # Apply Gaussian blur to reduce noise
+        # Apply before normalization to avoid effects of extreme pixel values
+        blurredImg = cv2.GaussianBlur(freq2dFFresp[freq][0], ksize, 0)
+
+        # Normalize spatialDFF between 0 and 1 and store 2D images
+        normImg = cv2.normalize(blurredImg, None, 0, 1, cv2.NORM_MINMAX)
+        freq2dFFrespImg[freq] = normImg
+
+        # Optionally apply binary mask
+        blurredImg_masked = blurredImg[mask==1] if mask is not None else blurredImg
+
+        # Normalize spatialDFF between 0 and 1, flatten to 1D and store 1D arrays
+        normImg_flattened = cv2.normalize(blurredImg_masked, None, 0, 1, cv2.NORM_MINMAX).flatten()
+        freq2dFFrespArray[freq] = normImg_flattened
+
+    return freq2dFFrespImg, freq2dFFrespArray
+
+
 def getXYdisp(Xcoor: list[np.ndarray], Ycoor: list[np.ndarray],
               frameDiff = 1):
     """
@@ -519,7 +563,8 @@ def getROImaskUI(image: np.ndarray, show_mask: bool = True,
 
         # Prepare base paths
         savePath = os.path.join(expDir, f"{saveName}.joblib")
-        savePath_contour = savePath.replace('response_mask', 'response_mask_contour')
+        base = os.path.splitext(savePath)[0]
+        savePath_contour = f"{base}_contour.joblib"
         print(f"Attempting to save to:\n- {savePath}\n- {savePath_contour}")
 
         def backup_file(path):
@@ -811,7 +856,7 @@ def qcams2roiTrace(qcams: list, baseline : bool = False, **kwargs):
 
     """
     imgs,_ = qcams2imgs(qcams)
-    avgImgSeries = np.array(imgs).mean(axis=(0))
+    avgImgSeries = np.array(imgs).mean(axis=0)
     
     if baseline:
         spatialDFF = calcSpatialBaseFluo(avgImgSeries, **kwargs)

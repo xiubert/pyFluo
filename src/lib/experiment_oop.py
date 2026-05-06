@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 import matplotlib.cm as cm
 import seaborn as sns
 import numpy as np
+import re
+import warnings
 from operator import itemgetter
 
 import lib.fileIngest as fileIngest
@@ -21,7 +23,8 @@ class Experiment:
                  format: str = 'MAK', 
                  subfolder: bool = False, 
                  drop_missing_dB: bool = True,
-                 t_base: tuple = (2.0, 3.0), t_resp: tuple = (3.3, 4.0)
+                 t_base: tuple = (2.0, 3.0), 
+                 t_resp: tuple = (3.3, 4.0)
                  ):
         """
         Initializes an Experiment instance, either standalone or as part of an ExperimentGroup.
@@ -29,9 +32,11 @@ class Experiment:
         Args:
             directory (str): Path to the experiment directory.
             parent (ExperimentGroup, optional): Reference to the parent ExperimentGroup, if any.
-            format (str): Format for extracting dB values from pulse metadata ('MAK' or 'PAC').
+            format (str): Format for extracting dB values from pulse metadata ('MAK', 'PAC' or 'SHY').
             subfolder (bool): Whether to search recursively within subfolders.
             drop_missing_dB (bool): Whether to automatically drop traces where dB was not identified.
+            t_base (tuple): Baseline time window relative to sound onset.
+            t_resp (tuple): Response time window relative to sound onset.
         """
         self.directory = directory
         self.parent = parent  # Parent experiment group (optional)
@@ -244,26 +249,127 @@ class Experiment:
         capsize = kwargs.get('capsize', 3)
         return plotting.plot_avgDFF_acrossAnimal(self.df, measure_col=measure_col, resp_col=resp_col, 
                                                  avgAnimal=avgAnimal, normalize=normalize, capsize=capsize, **kwargs)
+    
+
+    def getPulseFreqs(self, freqRegex: str, freqArray: np.ndarray[str] | list[str] = None) -> list[int]:
+        """
+        Extract unique frequencies (as integers) from pulse strings using a regex pattern.
+
+        Args:
+            freqRegex (str): Regex pattern to extract frequency from pulse strings.
+            freqArray (np.ndarray | list, optional): Array of pulse strings containing frequencies. 
+                                                     If None, use self.df['pulse'].
+
+        Returns:
+            freq_list (list): Sorted list of unique frequency values.
+        """
+
+        if freqArray is None:
+            # Use the 'pulse' column from self DataFrame if no array is provided
+            freqArray = self.df['pulse'].values
+
+        # Initialize an empty list and set for unique frequencies
+        freq_list = []
+        freq_set = set()
+
+        for pulse in freqArray:
+            try:
+                # Convert str to int
+                freq = int(re.search(freqRegex, pulse).group(1))
+                if freq not in freq_set:
+                    # Keep unique frequencies only
+                    freq_set.add(freq)
+                    freq_list.append(freq)
+            except AttributeError:
+                warnings.warn(f"Could not extract frequency from: {pulse}")
+
+        # Sort the frequency list in ascending order
+        freq_list.sort()
+        
+        return freq_list
+    
+    
+    def freq2spatialDFFresp(self, freqs: list[int] | np.ndarray[int], freqRegex: str, 
+                            suppress_warnings: bool = False, **kwargs) -> dict[int, tuple[np.ndarray, pd.DataFrame]]:
+        """
+        For each frequency in freqs, calculate spatial dFF within response window over the average of image arrays at that frequency.
+        
+        Args:
+            freqs (list | np.ndarray): Array of frequencies to extract.
+            freqRegex (str): Regex to extract frequency from 'pulse' column in the DataFrame.
+            suppress_warnings (bool): Whether to suppress warnings about missing frequencies.
+            **kwargs: Optional keyword arguments.
+        
+        Returns:
+            freq2spatialDFF (dict): 
+                freq -> tuple(2D response spatialDFF numpy array of shape (Y, X), 
+                              subset DataFrame at freq)
+        """
+
+        t_base = kwargs.get('t_base', self.t_base)
+        t_resp = kwargs.get('t_resp', self.t_resp)
+        
+        # Intialize a dictionary mapping frequency to response spatialDFF
+        freq2spatialDFF = {}
+
+        for freq in freqs:
+            imgs_list = []
+            row_indices = []
+
+            # Gather img arrays at this frequency
+            for idx, row in self.df.iterrows():
+                m = re.search(freqRegex, row['pulse'])
+                if m and int(m.group(1)) == freq:
+                    imgs_list.append(self.qcam2img[row['qcam']])
+                    row_indices.append(idx)
+
+            if not imgs_list:
+                if not suppress_warnings:
+                    warnings.warn(f"No qcam files found for frequency {freq}")
+                continue
+
+            try:
+                # Subset DataFrame for this frequency
+                df_subset = self.df.loc[row_indices].copy()
+                # Average across img arrays and calculate spatialDFF within response window
+                avgImgSeries = np.array(imgs_list).mean(axis=0)
+                spatialDFF = imgProcess.calcSpatialDFFresp(avgImgSeries, t_baseline=t_base, t_temporalAvg=t_resp, **kwargs)
+                freq2spatialDFF[freq] = (spatialDFF, df_subset)
+            except Exception as e:
+                raise ValueError(f"Failed to compute response spatialDFF for freq {freq}: {e}")
+
+        return freq2spatialDFF
+
+
 
 
 
 class ExperimentGroup:
-    def __init__(self, experiment_dirs: list, format: str = 'MAK', subfolder: bool = False, drop_missing_dB: bool = True):
+    def __init__(self, experiment_dirs: list, 
+                 format: str = 'MAK', 
+                 subfolder: bool = False, 
+                 drop_missing_dB: bool = True, 
+                 t_base: tuple = (2.0, 3.0), 
+                 t_resp: tuple = (3.3, 4.0)
+                 ):
         """
         Initializes an ExperimentGroup that contains multiple experiments.
 
         Args:
             experiment_dirs (list): List of directories corresponding to individual experiments.
-            format (str): Format for extracting dB values from pulse metadata ('MAK' or 'PAC').
+            format (str): Format for extracting dB values from pulse metadata ('MAK', 'PAC' or 'SHY').
             subfolder (list[bool], optional): Whether to search recursively within subfolders.
             drop_missing_dB (bool): Whether to automatically drop traces where dB was not identified.
-
+            t_base (tuple): Baseline time window relative to sound onset.
+            t_resp (tuple): Response time window relative to sound onset.
         """
         self.experiment_dirs = experiment_dirs
         self.format = format
         self.subfolder = subfolder
         self.qcam2img = {}  # Centralized storage
         self.qcam2header = {}
+        self.t_base = t_base
+        self.t_resp = t_resp
 
         # Generate metadata table for all experiments at once
         self.df = fileIngest.qcamPath2table(self.experiment_dirs, self.format, self.subfolder)
@@ -287,6 +393,13 @@ class ExperimentGroup:
         self.qcam2img.update(qcam2img)
         self.qcam2header.update(qcam2header)
 
+    def process_signal(self, **kwargs):
+        """Apply signal processing to all experiments in the group."""
+        t_base = kwargs.get('t_base', self.t_base)
+        t_resp = kwargs.get('t_resp', self.t_resp)
+        self.df = signalProcess.updateTable_signal(self.df, self.qcam2img, 
+                                                   t_base=t_base, t_resp=t_resp, **kwargs)
+    
     def plot_all_experiments(self):
         """Plots average fluorescence traces for all experiments in the group."""
         fig = go.Figure()
@@ -339,3 +452,75 @@ class ExperimentGroup:
 #             fig.show()
 #         else:
 #             print(f"Invalid experiment index: {experiment_index}. Choose between 0 and {len(self.experiments)-1}.")
+
+
+    def getPulseFreqs(self, freqRegex: str) -> dict[str, list[int]]:
+        """
+        Extract unique frequencies re experiment (animal).
+
+        Args:
+            freqRegex (str): Regex pattern to extract frequency from pulse strings in the DataFrame.
+
+        Returns:
+            dir2freqs (dict):
+                exp.directory -> sorted list of unique frequencies
+        """
+        
+        # Initialize a dictionary mapping experiment directory to its list of frequencies
+        dir2freqs = {}
+
+        for exp in self.experiments:
+            # Use each experiment's 'pulse' in its own Dataframe
+            freqs = exp.getPulseFreqs(freqRegex)
+            dir2freqs[exp.directory] = freqs
+
+        return dir2freqs
+    
+    
+    def freq2spatialDFFresp(self, freqs: list[int] | np.ndarray | dict[str, list[int]], freqRegex: str, 
+                            **kwargs) -> dict[str, dict[int, tuple[np.ndarray, pd.DataFrame]]]:
+        """
+        Apply freq2spatialDFFresp re experiment (animal).
+
+        Args:
+            freqs (list | np.ndarray | dict): Array of frequencies to extract for all experiments, 
+                                              or a dictionary mapping experiment (root) directories to their respective frequencies.
+            freqRegex (str): Regex to extract frequency from 'pulse' column in the DataFrame.
+            **kwargs: Optional keyword arguments.
+
+        Returns:
+             freq2spatialDFF_reAnimal (dict of dict):
+                Dict mapping each experiment directory (animal) to its corresponding frequency-to-spatialDFF mappings: 
+                exp.directory -> {freq -> (spatialDFF, df_subset)}
+        """
+
+        t_base = kwargs.get('t_base', self.t_base)
+        t_resp = kwargs.get('t_resp', self.t_resp)
+        
+        freq2spatialDFF_reAnimal = {}
+
+        for exp in self.experiments:
+            if isinstance(freqs, dict):
+                # If freqs is a dict, use the frequencies for this specific experiment
+                exp_freqs = []
+                for key in freqs.keys():
+                    if exp.directory.startswith(key):
+                        # freqs.keys() are expected to be root directories that can match the start of exp.directory
+                        exp_freqs = freqs[key]
+                        break
+            else:
+                # If freqs is a list or array, use the same frequencies for all experiments
+                exp_freqs = freqs
+            
+            freq2spatialDFF = exp.freq2spatialDFFresp(exp_freqs, freqRegex, suppress_warnings=True, 
+                                                      t_base=t_base, t_resp=t_resp, **kwargs)
+
+            # Warn if some freqs are missing in this animal
+            missing_freqs = set(exp_freqs) - set(freq2spatialDFF.keys())
+            if missing_freqs:
+                warnings.warn(f"{exp.directory} missing frequencies: {sorted(missing_freqs)}")
+
+            freq2spatialDFF_reAnimal[exp.directory] = freq2spatialDFF
+
+        return freq2spatialDFF_reAnimal
+    

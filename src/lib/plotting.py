@@ -7,11 +7,15 @@ import matplotlib.cm as cm
 import matplotlib.patches as mpatches
 from matplotlib.widgets import Slider, Button
 from matplotlib.animation import FuncAnimation, PillowWriter
+from matplotlib.gridspec import GridSpec
 import plotly.express as px
 import plotly.graph_objs as go
 from plotly.subplots import make_subplots
 import seaborn as sns
-from scipy.cluster.hierarchy import dendrogram
+from scipy.cluster.hierarchy import dendrogram, fcluster
+from scipy.stats import spearmanr
+from scipy.optimize import curve_fit
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from datetime import datetime
 import os
@@ -24,6 +28,15 @@ from itertools import product
 import lib.signalProcess as signalProcess
 import lib.fileIngest as fileIngest
 import lib.imgProcess as imgProcess
+
+def saveMPLfig(fig, outputPath):
+    # set export font to support editable text in vector graphics output
+    plt.rcParams['pdf.fonttype'] = 42
+    plt.rcParams['ps.fonttype'] = 42
+    
+    fig.savefig(outputPath, dpi=1000, 
+                transparent=True, 
+                format="pdf")
 
 
 def plotAvgImg(img):
@@ -264,22 +277,24 @@ def plot_respHeatmap(df: pd.DataFrame, dB_plot: int = 80, same_scale: bool = Tru
     plt.show()
 
 
-def plot_traces(df: pd.DataFrame, dB_plot: int | list[int] = 80, resp_col: str = 'dFF_ROI_raw', 
-                sepPlot: bool = False, stimStart: float = 3.0, alpha_ind: float = 0.3, **kwargs):
+def plot_traces(df: pd.DataFrame, dB_plot: int | list[int] | None = 80, resp_col: str = 'dFF_ROI_raw', 
+                sepPlot: bool = False, stimStart: float = 3.0, alpha_ind: float = 0.3, Yaxis_range: tuple[float,float] = None, **kwargs):
     """
     Plot individual and averaged traces for a given sound intensity across different treatments.
 
     Args:
         df (pd.DataFrame): Metadata dataframe including columns: 
                            'dB', 'treatment', 'time' (or 'nFrames'), and column for response traces.
-        dB_plot (int | list, optional): Sound intensity (in dB) for traces to be plotted. Defaults to 80.
-                                        Either: - Integer representing the sound level in dB.
-                                                - List including all sound levels to be plotted.
+        dB_plot (int | list | None, optional): Sound intensity (in dB) for traces to be plotted. Defaults to 80.
+                                               Either: - Integer representing the sound level in dB.
+                                                       - List including all sound levels to be plotted.
+                                                       - None, to plot all traces.
         resp_col (str, optional): Column name for response traces. Defaults to 'dFF_ROI_raw'.
         sepPlot (bool, optional): If True, plot treatments in separate subplots; otherwise, plot in one plot. 
                                   Defaults to 'False'.
         stimStart (float, optional): Stimulus start time (in seconds). Defaults to 3.0.
         alpha_ind (float, optional): Transparency for individual traces. Defaults to 0.3.
+        Yaxis_range (tuple, optional): Set fixed Y-axis range as (y_min, y_max). If None, Y-axis is auto-scaled.
         **kwargs: Optional arguments that will override default.
     """
     
@@ -296,14 +311,16 @@ def plot_traces(df: pd.DataFrame, dB_plot: int | list[int] = 80, resp_col: str =
         missing_dBs = [db for db in dB_plot if db not in df['dB'].unique()]
         if missing_dBs:
             raise ValueError(f"dB_plot contains values not found in the 'dB' column: {missing_dBs}")
-    else:
-        raise TypeError(f"dB_plot must be an int or list[int], got {type(dB_plot)}")
+    elif dB_plot is not None:
+        raise TypeError(f"dB_plot must be an int, list[int], or None, got {type(dB_plot)}")
 
     # Filter the DataFrame for the specified sound intensity(s)
     if isinstance(dB_plot, int):
         filtered_df = df[df['dB'] == dB_plot].reset_index(drop=True)
     elif isinstance(dB_plot, list):
         filtered_df = df[df['dB'].isin(dB_plot)].reset_index(drop=True)
+    else:
+        filtered_df = df.reset_index(drop=True)
     
     # Get time vectors
     if 'time' in filtered_df.columns:
@@ -395,7 +412,9 @@ def plot_traces(df: pd.DataFrame, dB_plot: int | list[int] = 80, resp_col: str =
         current_ax.set_ylabel(resp_col, size=12)
         current_ax.set_title(f"{treatment}", size=12) if sepPlot else None
         current_ax.axvline(x=stimStart, color='k', linestyle='--')
-        current_ax.legend()
+        current_ax.legend(loc='upper right')
+        if Yaxis_range:
+            current_ax.set_ylim(Yaxis_range)
     
     # Format the title based on 'dB_plot' type
     if isinstance(dB_plot, int):
@@ -1097,7 +1116,7 @@ def plot_avgDFF_acrossAnimal(df: pd.DataFrame,
 
     # Calculate the mean, standard deviation (SD), and standard error (SEM) across dirs for each treatment/dB combination
     agg_dict = {
-        f'count_{resp_col}': (resp_col, 'size'), 
+        f'count_{resp_col}': (resp_col, 'count'), 
         f'mean_{resp_col}': (resp_col, 'mean'), 
         f'std_{resp_col}': (resp_col, 'std')
     }
@@ -1499,6 +1518,9 @@ def plot_ROI_trace(roi_avg: np.ndarray, normalize: bool = True, plot_trace: bool
 def plot_hierarchical_cluster(linkage_matrix: np.ndarray, 
                               roi_trace: np.ndarray, 
                               stimStart: float = 3.0, 
+                              timeVector: np.ndarray = None, 
+                              n_clusters: int = None, 
+                              Yaxis_label: str = 'ROI', 
                               **kwargs) -> tuple:
     """
     Visualizes hierarchical clustering results with dendrogram and sorted ROI traces.
@@ -1512,9 +1534,13 @@ def plot_hierarchical_cluster(linkage_matrix: np.ndarray,
         roi_trace (np.ndarray): 2D or 3D array of ROI fluorescence traces.
                                 Shape should be [maskNumber, frame] or [traceNumber, maskNumber, frame].
         stimStart (float, optional): Stimulus start time (in seconds). Defaults to 3.0.
+        timeVector (np.ndarray, optional): 1D array of time points corresponding to frames.
+                                           If provided, overrides time vector generated from roi_trace shape.
+        n_clusters (int, optional): Desired number of clusters. If provided, overrides 'color_threshold' logic. Defaults to None.
+        Yaxis_label (str, optional): Label for the Y-axis of the dendrogram and trace heatmap. Defaults to 'ROI'.
         **kwargs: Optional keyword arguments.
             - Example: Additional arguments passed to dendrogram() such as:
-                       color_threshold (float, optional): Threshold for cluster coloring.
+                       color_threshold (float, optional): Distance threshold for cluster coloring.
                                                           Clusters with distance greater than the threshold are in different colors.
                                                           eg. color_threshold=0.5, color_threshold=0.5*max(linkage_matrix[:,2]), etc.
                                                           Defaults to '0.7*max(linkage_matrix[:,2])'.
@@ -1537,10 +1563,19 @@ def plot_hierarchical_cluster(linkage_matrix: np.ndarray,
     roi_trace = np.mean(roi_trace, axis=0) if roi_trace.ndim == 3 else roi_trace
     
     # Get the time vector
-    t = signalProcess.getTimeVec(roi_trace.shape[-1], **kwargs)
+    t = timeVector if timeVector is not None else signalProcess.getTimeVec(roi_trace.shape[-1], **kwargs)
+
+    # Remove 'color_threshold' from kwargs if exists
+    color_threshold = kwargs.pop('color_threshold', 0.7*max(linkage_matrix[:,2]))
+
+    # Override 'color_threshold' if 'n_clusters' is provided
+    if n_clusters is not None:
+        # Sort cluster distances in descending order
+        cluster_dists = np.sort(linkage_matrix[:, 2])[::-1]
+        color_threshold = cluster_dists[n_clusters-2] if n_clusters >= 2 else 0
 
     # Generate the dendrogram without plotting to get metadata
-    dendro = dendrogram(linkage_matrix, no_plot=True, **kwargs)
+    dendro = dendrogram(linkage_matrix, no_plot=True, color_threshold=color_threshold, **kwargs)
     
     # Extract leaf order and colors
     leaf_order = dendro['leaves']
@@ -1568,12 +1603,13 @@ def plot_hierarchical_cluster(linkage_matrix: np.ndarray,
         orientation='left',
         leaf_font_size=5,
         no_labels=True,
+        color_threshold=color_threshold,
         ax=ax[0], 
         **kwargs
     )
     ax[0].set_title('Hierarchical Clustering Dendrogram', fontsize=14)
     ax[0].set_xlabel('Distance', fontsize=12)
-    ax[0].set_ylabel('ROI Index', fontsize=12)
+    ax[0].set_ylabel(f'{Yaxis_label} Index', fontsize=12)
     
     # Add cluster legend
     legend_handles = [mpatches.Patch(color=color_map_legend[i], 
@@ -1590,9 +1626,9 @@ def plot_hierarchical_cluster(linkage_matrix: np.ndarray,
     )
     
     ax[1].axvline(x=stimStart, color='k', linestyle='--')
-    ax[1].set_title('ROI Sorted by Clustering Similarity', fontsize=14)
+    ax[1].set_title(f'{Yaxis_label} Sorted by Clustering Similarity', fontsize=14)
     ax[1].set_xlabel('time (s)', fontsize=12)
-    ax[1].set_ylabel('ROI Index', fontsize=12)
+    ax[1].set_ylabel(f'{Yaxis_label} Index', fontsize=12)
 
     # Add colorbar
     colorbar = fig.colorbar(roi_trace_img, ax=ax[1])
@@ -1708,3 +1744,908 @@ def plot_cluster_roi(img_series: np.ndarray,
 
     return cluster_trace
 
+
+def plot_oddball_wholeTrace(df: pd.DataFrame, 
+                            onset_times: tuple[np.ndarray, np.ndarray] | dict[str, tuple[np.ndarray, np.ndarray]], 
+                            resp_col: str = 'dFF_ROI_linFilt_butterFilt', 
+                            negative_exclude: bool = False, 
+                            t_base: float = -0.025, 
+                            t_resp: tuple = (0.3, 0.975), 
+                            plot_traces: bool = True, 
+                            plot_errBar: bool = False, 
+                            stimStart: float = 3.0, 
+                            Yaxis_range: tuple[float,float] = None, 
+                            show_deviant_dots: bool = False, 
+                            show_standard_dots: bool = False, 
+                            trace_color: str = 'k',
+                            stim_colors: dict = {'Deviant': 'r', 'Standard': 'k'}, 
+                            **kwargs) -> pd.DataFrame:
+    """
+    Plot (individual and average) traces with marked deviant and standard tone onset times.
+
+    Args:
+        df (pd.DataFrame): Metadata Dataframe including columns: 'pulse', 'treatment', 'time', and column for response traces.
+        onset_times (tuple | dict): Deviant and standard tone onset times. Can be:
+                                    - tuple: (deviant_times, standard_times).
+                                    - dict: with string keys mapping to tuples (deviant_times, standard_times).
+        resp_col (str, optional): Column name for response traces. Defaults to 'dFF_ROI_linFilt_butterFilt'.
+        negative_exclude (bool, optional): Whether to exclude negative responses (resp peak - base < 0) before averaging.
+                                           If True, criterion is applied to each trace individually after fit subtraction and before low-pass filtering.
+                                           After low-pass filtering, negative response windows are set to NaN, and then averaged.
+                                           This will not change the trace plot, but will modify the dataframe output.
+        t_base (float, optional): For each individual response, time point (relative to corresponding tone onset time) 
+                                  at which baseline is calculated.
+                                  If 'None', baseline is calculated at the last time frame before tone onset (-0.025 sec by default).
+                                  Only used if 'negative_exclude' is True.
+        t_resp (tuple, optional): For each individual response, response window (relative to corresponding tone onset time) 
+                                  within which peak response is calculated.
+                                  Only used if 'negative_exclude' is True.
+        plot_traces (bool, optional): Whether to plot individual and average traces.
+                                      If False, only return the dataframe with response traces and tone onset times without plotting.
+        plot_errBar (bool, optional): Whether to plot error bars.
+                                      If True, SEM is plotted as shaded area instead of individual traces.
+        stimStart (float, optional): Time (in seconds) when the first stimulus starts.
+        Yaxis_range (tuple, optional): Set fixed Y-axis range as (y_min, y_max). If None, auto-scales Y-axis.
+        show_deviant_dots (bool, optional): If True, show deviant tone onset as red dots beneath the traces.
+        show_standard_dots (bool, optional): If True, show standard tone onset as black dots beneath the traces.
+        trace_color (str, optional): Color for average trace and individual traces/error bars. Defaults to 'k' (black).
+        stim_colors (dict, optional): Dictionary mapping marker colors to each tone type (deviant/standard).
+                                      If None, defaults to {'Deviant': 'r', 'Standard': 'k'}.
+        **kwargs: Optional keyword arguments.
+
+    Returns:
+        df_resp_trace (pd.DataFrame): Dataframe including individual and average response traces re treatment and pulse.
+                                      Including columns: 'treatment', 'pulse', 'time', 'individual_traces', 
+                                                         'avg_trace', 'deviant_times', and 'standard_times'.
+    """
+    
+    df = df.copy()
+
+    # Add deviant and standard tone onset times to the Dataframe based on the pulse name
+    if isinstance(onset_times, tuple):
+        # If 'onset_times' is a tuple, all pulse names must NOT end with digits
+        if df["pulse"].str.contains(r'\d+$', regex=True).any():
+            raise ValueError("Pulse names end with digits but 'onset_times' is a tuple (expected dict).")
+        # Get all tone onset times (deviant + standard)
+        total_times = np.sort(np.concatenate((onset_times[0], onset_times[1])))
+        # Assume positions of deviant tones are the same for all traces
+        df['deviant_times'] = [onset_times[0]] * len(df)
+        df['standard_times'] = [onset_times[1]] * len(df)
+        # Simplify pulse names
+        df['pulse'] = df['pulse'].str.replace(
+            'oddball_15422Hz_std_7711Hz.*', 
+            'Deviant: 16kHz\nStandard: 8kHz', 
+            regex=True
+        )
+        df['pulse'] = df['pulse'].str.replace(
+            'oddball_7711Hz_std_15422Hz.*', 
+            'Deviant: 8kHz\nStandard: 16kHz', 
+            regex=True
+        )
+    
+    elif isinstance(onset_times, dict):
+        # If 'onset_times' is a dictionary, all pulse names must end with digits
+        if not df["pulse"].str.contains(r'\d+$', regex=True).all():
+            raise ValueError("Not all pulse names end with digits but 'onset_times' is a dict.")
+        # Get all tone onset times (deviant + standard) by assuming they are the same across all pulse names
+        total_times = np.sort(np.concatenate((list(onset_times.values())[0][0], list(onset_times.values())[0][1])))
+        # Extract suffix digits from pulse names as pulse ID
+        df['pulse_id'] = df['pulse'].str.extract(r'(\d+)$')
+        # Check all pulse IDs exist in 'onset_times' keys
+        missing_pulse_id = set(df['pulse_id']) - set(onset_times.keys())
+        if missing_pulse_id:
+            raise ValueError(f"Pulse IDs {missing_pulse_id} not found in 'onset_times' dictionary keys.")
+        # Map each oddball pulse train to each trace
+        df['deviant_times'] = df['pulse_id'].apply(lambda x: onset_times[x][0])
+        df['standard_times'] = df['pulse_id'].apply(lambda x: onset_times[x][1])
+        # Simplify pulse names while preserving pulse ID
+        df['pulse'] = df.apply(lambda x: 
+            'Deviant: 16kHz\nStandard: 8kHz\nProtocol: ' + x['pulse_id'] 
+            if 'oddball_15422Hz_std_7711Hz' in x['pulse'] 
+            else 'Deviant: 8kHz\nStandard: 16kHz\nProtocol: ' + x['pulse_id'],
+            axis=1
+        )
+        # Drop temporary column
+        df = df.drop(columns=['pulse_id'])
+    
+    else:
+        raise TypeError("'onset_times' must be either a tuple or dict.")
+    
+    # Round time vector to 3 decimal places (assume time is the same for all traces)
+    # time = df['time'].iloc[0]
+    time = np.round(df['time'].iloc[0], 3)
+
+    # Get stimulus marker colors
+    dev_color = stim_colors.get('Deviant', 'r') if stim_colors else 'r'
+    std_color = stim_colors.get('Standard', 'k') if stim_colors else 'k'
+
+    # Initialize a list to store response trace data
+    resp_trace = []
+
+    for treat in df['treatment'].unique():
+        n_pulses = df[df['treatment'] == treat]['pulse'].nunique()
+        if plot_traces:
+            fig, ax = plt.subplots(n_pulses, 1, figsize=(16, 4*n_pulses))
+            if n_pulses == 1:
+                ax = [ax]
+            if isinstance(onset_times, tuple):
+                plt.subplots_adjust(hspace=0.3)
+            else:
+                # Reduce space between title and the first subplot
+                plt.subplots_adjust(hspace=0.4, top=0.95)
+
+        for i, (pulse, group) in enumerate(df[df['treatment'] == treat].groupby('pulse')):
+            traces = np.array(group[resp_col].tolist())
+            traces_mean, traces_mean_psem, traces_mean_msem = signalProcess.meanPlusMinusSem(traces)
+            deviant_times = group['deviant_times'].iloc[0]  # Take first value (all same in group)
+            standard_times = group['standard_times'].iloc[0]
+            
+            if plot_traces:
+                ax[i].plot(time, traces_mean, linewidth=2, color=trace_color)
+                if plot_errBar:
+                    ax[i].fill_between(time, traces_mean_psem, traces_mean_msem, color='gray' if trace_color == 'k' else trace_color, alpha=0.1)
+                else:
+                    for j in range(traces.shape[0]):
+                        ax[i].plot(time, traces[j, :], linewidth=1.5, color='gray' if trace_color == 'k' else trace_color, alpha=0.3)
+                ax[i].set_ylabel(resp_col, fontsize=14)
+                ax[i].axvline(x=stimStart, color='k', linestyle='--')
+
+                y_min, y_max = ax[i].get_ylim()
+                dot_y = y_min + 0.1 * (y_max - y_min)  # slightly above bottom
+
+                if show_deviant_dots:
+                    ax[i].scatter(deviant_times, [dot_y]*len(deviant_times),
+                                  color=dev_color, edgecolors=dev_color, s=20, zorder=1, alpha=1, label="Deviant tone")
+                if show_standard_dots:
+                    ax[i].scatter(standard_times, [dot_y]*len(standard_times),
+                                  color=std_color, edgecolors=std_color, s=20, zorder=1, alpha=0.2, label="Standard tone")
+                if not (show_deviant_dots or show_standard_dots):
+                    for m, deviant in enumerate(deviant_times):
+                        ax[i].axvline(x=deviant, color=dev_color, alpha=0.4, label="Deviant tone" if m == 0 else None)
+                    for n, standard in enumerate(standard_times):
+                        ax[i].axvline(x=standard, color=std_color, alpha=0.08, label="Standard tone" if n == 0 else None)
+                if Yaxis_range:
+                    ax[i].set_ylim(Yaxis_range)
+                ax[i].set_title(f"{pulse}", fontsize=14)
+                ax[i].legend(fontsize=11, loc='upper right')
+
+            if negative_exclude:
+                if 'butterFilt' in resp_col:
+                    # Apply criterion after linear/logrithmic fit subtraction but before low-pass filtering
+                    # Search for dataframe column only including remaining substrings ('linFilt' or 'logFilt')
+                    resp_col_beforeButterFilt = resp_col.replace('_butterFilt', '')
+                    if resp_col_beforeButterFilt not in df.columns:
+                        raise ValueError(f"Column '{resp_col_beforeButterFilt}' not found in DataFrame.")
+                    traces_beforeButterFilt = np.array(group[resp_col_beforeButterFilt].tolist())
+                    for k in range(traces_beforeButterFilt.shape[0]):
+                        for stim_time in total_times:
+                            base, resp = signalProcess.getBaseResp(traces_beforeButterFilt[k, :], time,
+                                                                   t_base=(stim_time + t_base, stim_time + t_base) if t_base else \
+                                                                          (time[np.where(time < stim_time)[0][-1]], time[np.where(time < stim_time)[0][-1]]),
+                                                                   t_resp=(stim_time + t_resp[0], stim_time + t_resp[1]),
+                                                                   **kwargs)
+                            if resp - base < 0:
+                                # Set negative response windows to NaN (including t_base time frame of this window but not of the next window)
+                                traces[k, :][np.where((time >= stim_time + t_base) & (time < stim_time + t_resp[1]))[0]] = np.nan
+                    traces_negExcl_mean = np.nanmean(traces, axis=0)  # Ignore NaN values (negative responses)
+                elif 'linFilt' in resp_col or 'logFilt' in resp_col:
+                    # Directly apply criterion without low-pass filtering
+                    for k in range(traces.shape[0]):
+                        for stim_time in total_times:
+                            base, resp = signalProcess.getBaseResp(traces[k, :], time,
+                                                                   t_base=(stim_time + t_base, stim_time + t_base) if t_base else \
+                                                                          (time[np.where(time < stim_time)[0][-1]], time[np.where(time < stim_time)[0][-1]]),
+                                                                   t_resp=(stim_time + t_resp[0], stim_time + t_resp[1]),
+                                                                   **kwargs)
+                            if resp - base < 0:
+                                traces[k, :][np.where((time >= stim_time + t_base) & (time < stim_time + t_resp[1]))[0]] = np.nan
+                    traces_negExcl_mean = np.nanmean(traces, axis=0)
+                else:
+                    raise ValueError("For 'negative_exclude=True', 'resp_col' must include either 'butterFilt', 'linFilt', or 'logFilt'.")
+                
+            # Store all relevant data
+            resp_trace.append({'treatment': treat, 'pulse': pulse, 'time': time, 
+                               'individual_traces': traces, 
+                               'avg_trace': traces_negExcl_mean if negative_exclude else traces_mean, 
+                               'deviant_times': deviant_times, 
+                               'standard_times': standard_times})
+
+        if plot_traces:
+            ax[-1].set_xlabel('time (s)', fontsize=14)
+            fig.suptitle(f"Oddball Paradigm: {treat}", fontsize=16)
+
+    if plot_traces:
+        plt.show()
+
+    # Convert response trace list to DataFrame
+    df_resp_trace = pd.DataFrame(resp_trace)
+
+    return df_resp_trace
+
+
+def plot_oddball_trace_reTone(df_resp_peak: pd.DataFrame, 
+                              trace_col: str = 'trace', 
+                              x_col: str = 'treatment', 
+                              y_col: str = 'pulse', 
+                              within_col: str = 'stimulus', 
+                              within_colors: str | dict = None, 
+                              Yaxis_label: str = 'ΔF/F subtracting baseline', 
+                              Yaxis_range: tuple[float,float] = None, 
+                              plot_traces: bool = False, 
+                              alpha_traces: float = 0.1, 
+                              plot_errBar: bool = False, 
+                              alpha_errBar: float = 0.05, 
+                              **kwargs) -> plt.Figure:
+    """
+    Plot average traces across multiple conditions for comparison. 
+
+    This function visualizes up to three experimental factors simultaneously:
+    (1) x-axis grouping (e.g., treatment),
+    (2) y-axis grouping (e.g., pulse protocol),
+    (3) within-subplot grouping (e.g., stimulus type).
+    
+    Example:
+    - treatment: preZX1 vs postZX1
+    - pulse: 8/16 kHz vs 16/8 kHz protocols
+    - stimulus: Deviant vs Standard tones
+
+    Args:
+        df_resp_peak (pd.DataFrame): Dataframe including individual response traces and experimental conditions.
+                                     Including columns referenced by: trace_col, x_col, y_col, within_col .
+        x_col (str, optional): Column used for x-axis grouping (e.g., treatment). Defaults to 'treatment'. 
+                               If None, plots collapse to a single column. 
+                               If 'post' is included in x_col value, the corresponding trace will be plotted with alpha=0.5.
+        y_col (str, optional): Column used for y-axis grouping (e.g., pulse protocol). Defaults to 'pulse'. 
+                               If None, plots collapse to a single row.
+        within_col (str, optional): Column used for within-subplot grouping (e.g., stimulus type).
+                                    Defaults to 'stimulus'.
+                                    If None, only one trace is plotted in each subplot.
+        within_colors (str | dict, optional): Either a string (if within_col is None) or a dict mapping values in within_col to trace colors.
+                                              Defaults to 'k' if within_col is None else {'Deviant': 'r', 'Standard': 'k'}.
+        Yaxis_label (str, optional): Label for Y-axis. Defaults to 'ΔF/F subtracting baseline' 
+                                     representing Y = Δ(ΔF/F) = ΔF/F trace - baseline ΔF/F.
+        Yaxis_range (tuple, optional): Set fixed Y-axis range as (y_min, y_max). If None, auto-scales Y-axis.
+        plot_traces (bool, optional): Whether to plot individual traces.
+        alpha_traces (float, optional): Transparency for individual traces.
+        plot_errBar (bool. optional): Whether to plot SEM as shading (error bars).
+        alpha_errBar (float, optional): Transparency for error bars.
+        **kwargs: Optional keyword arguments.
+
+    Returns:
+        fig (plt.Figure): Figure object containing the plotted traces.
+    """
+
+    # Check if at least one grouping variable is provided
+    if all(v is None for v in [x_col, y_col, within_col]):
+        raise ValueError("At least one grouping variable must be provided.")
+   
+    # First time frame starts at -0.025 sec by default (sound onset: 0 sec)
+    delayAdjust = kwargs.pop('delayAdjust', -0.025)  # remove from kwargs if present
+
+    # If any grouping column is not provided, collapse the plot to fewer dimensions
+    df_plot = df_resp_peak.copy()
+    if x_col is None:
+        df_plot["_x"] = ""
+        x_col = "_x"
+
+    if y_col is None:
+        df_plot["_y"] = ""
+        y_col = "_y"
+
+    within_col_input = within_col  # Store original within_col input for legend adding logic
+    if within_col is None:
+        df_plot["_within"] = "all"
+        within_col = "_within"
+        # Plot all traces in black by default if only one trace is in each subplot
+        within_colors = {"all": "k"} if within_colors is None else {"all": within_colors}
+    else:
+        # Map each value in within_col to a color
+        within_colors = {'Deviant': 'r', 'Standard': 'k'} if within_colors is None else within_colors
+
+    x_label = df_plot[x_col].unique()
+    y_label = df_plot[y_col].unique()
+    n_x_label = len(x_label)
+    n_y_label = len(y_label)
+    
+    fig, ax = plt.subplots(n_y_label, n_x_label, figsize=(8+2*n_x_label, 4+2*n_y_label))
+    
+    # Force ax to be 2D of shape (n_y_label, n_x_label)
+    if n_y_label == 1 and n_x_label == 1:
+        ax = np.array([[ax]])
+    elif n_y_label == 1:
+        ax = ax.reshape(1, -1)
+    elif n_x_label == 1:
+        ax = ax.reshape(-1, 1)
+
+    for i, y_val in enumerate(y_label):
+        for j, x_val in enumerate(x_label):
+            for stim in within_colors.keys():  # Keep same label sequence as in dict 'within_colors'
+                df_subset = df_plot[
+                    (df_plot[x_col] == x_val) & 
+                    (df_plot[y_col] == y_val) & 
+                    (df_plot[within_col] == stim)
+                ]
+                if df_subset.empty:
+                    continue  # Skip plotting if no data for this combination of x, y, and within values
+                trace = df_subset[trace_col].iloc[0]
+                time = signalProcess.getTimeVec(trace.shape[-1], delayAdjust = delayAdjust, **kwargs)
+                trace_mean, trace_psem, trace_msem = signalProcess.meanPlusMinusSem(trace, ignoreNaN=True)  # Ignore NaN values (negative responses excluded)
+                
+                ax[i,j].plot(time, trace_mean, color=within_colors[stim], alpha=0.5 if 'post' in str(x_val).lower() else 1.0, label=f'{stim}', linewidth=3)
+                if plot_errBar:
+                    # Add error bars
+                    ax[i,j].fill_between(time, trace_psem, trace_msem, color=within_colors[stim], alpha=alpha_errBar)
+                if plot_traces:
+                    # Add individual traces
+                    for k in range(trace.shape[0]):
+                        ax[i,j].plot(time, trace[k, :], color=within_colors[stim], alpha=alpha_traces, linewidth=2)
+            
+            ax[i,j].axvline(x=0, color='k', linestyle='--')
+            if Yaxis_range:
+                ax[i,j].set_ylim(Yaxis_range)
+            if (within_col_input is not None) and (i == 0) and (j == n_x_label - 1):
+                # Add legend only in the top-right subplot if within_col is provided (multiple traces in each subplot)
+                ax[i,j].legend(fontsize=14, loc='upper right')
+            ax[i, j].spines['top'].set_visible(False)
+            ax[i, j].spines['right'].set_visible(False)
+            ax[i, j].tick_params(axis='both', labelsize=12)
+
+            if i == 0:
+                # Add treatment titles
+                ax[i,j].set_title(x_val, pad=15, fontsize=16, fontweight='bold')
+            if i == n_y_label - 1:
+                # Add X-axis labels
+                ax[i,j].set_xlabel('time (s)', fontsize=16)
+            if j == 0:
+                ax[i,j].set_ylabel(Yaxis_label, fontsize=16)
+                # Add pulse protocol names
+                ax[i,j].text(-0.6, 0.5, y_val, fontsize=16, fontweight='bold', rotation=0, 
+                             ha='center', va='center', transform=ax[i,j].transAxes)
+
+    plt.tight_layout(rect=[0.05, 0, 1, 1])  # extra left margin for exporting to pdf
+    plt.show()
+
+    return fig
+
+
+def plot_blurred_respSpatialDFF(freq2dFFresp_calcium: dict, freq2dFFresp_zinc: dict, ksize: tuple = (7, 7), 
+                                plot_figures: bool = True, display_wideField: bool = True, display_traces: bool = True, 
+                                mask: np.ndarray = None, mask_contour: np.ndarray = None, 
+                                stimStart: float = 3.0, palette: list = ['r', 'g'], 
+                                Yaxis_range: tuple[float,float] = None) -> tuple[dict, dict, dict]:
+    """
+    Plot Gaussian blurred response spatialDFF images and traces within ROI for calcium and zinc, 
+    and compute Spearman correlation coefficients between calcium and zinc spatialDFF re frequency.
+
+    Args:
+        freq2dFFresp_calcium (dict): Dictionary mapping frequency to 
+                                     tuple(raw spatialDFF image of shape (Y, X), 
+                                           subset DataFrame at the frequency) for calcium.
+        freq2dFFresp_zinc (dict): Dictionary mapping frequency to 
+                                  tuple(raw spatialDFF image of shape (Y, X), 
+                                        subset DataFrame at the frequency) for zinc.
+        ksize (tuple, optional): Kernel size for Gaussian blur. 
+                                 Suggested minimal size (7, 7) to effectively reduce noise (default).
+                                 A larger size (e.g., (15, 15)) is suggested for stronger noise reduction.
+        plot_figures (bool, optional): Whether to plot spatialDFF images and traces. Defaults to True.
+        display_wideField (bool, optional): Whether to display gray-scaled wide-field images for calcium and zinc. Defaults to True.
+        display_traces (bool, optional): Whether to display traces within ROI stored in the DataFrames. Defaults to True.
+        mask (np.ndarray, optional): Binary mask to filter pixels in flattened arrays in 'freq2dFFrespArray_calcium' 
+                                     and 'freq2dFFrespArray_zinc', on which Spearman correlation is computed.
+                                     If None, no mask is applied and arrays in 'freq2dFFrespArray' include all pixels. Defaults to None.
+        mask_contour (np.ndarray, optional): Mask's vertex coordinates to overlay on images, including a repeated first vertex to close the shape.
+                                             If None, no contour is plotted. Defaults to None.
+        stimStart (float, optional): Stimulus start time (in seconds). Defaults to 3.0.
+        palette (list, optional): List of colors for plotting traces. Defaults to red and green for calcium and zinc, respectively.
+        Yaxis_range (tuple, optional): Set fixed Y-axis range as (y_min, y_max) for traces. If None, Y-axis is auto-scaled.
+    
+    Returns:
+        tuple[dict, dict, dict]:
+            - freq2dFFrespArray_calcium: Dictionary mapping frequency to blurred, normalized and flattened spatialDFF within mask for calcium (1D array).
+            - freq2dFFrespArray_zinc: Dictionary mapping frequency to blurred, normalized and flattened spatialDFF within mask for zinc (1D array).
+            - freq2spearman: Dictionary mapping frequency to Spearman correlation coefficient between calcium and zinc spatialDFF (float).
+    """
+
+    # Check keys of freq2dFFresp_calcium and freq2dFFresp_zinc are identical
+    if set(freq2dFFresp_calcium.keys()) != set(freq2dFFresp_zinc.keys()):
+        raise ValueError("Keys of freq2dFFresp_calcium and freq2dFFresp_zinc must be identical.")
+    
+    # Initialize dictionaries to store blurred and normalized images/flattened arrays for calcium and zinc
+    freq2dFFrespImg_calcium, freq2dFFrespArray_calcium = imgProcess.blurImg(freq2dFFresp_calcium, ksize=ksize, mask=mask)
+    freq2dFFrespImg_zinc, freq2dFFrespArray_zinc = imgProcess.blurImg(freq2dFFresp_zinc, ksize=ksize, mask=mask)
+
+    # Initialize a dictionary mapping frequency to Spearman correlation coefficient
+    freq2spearman = {}
+    for freq in freq2dFFrespArray_calcium.keys():
+        corr, _ = spearmanr(freq2dFFrespArray_calcium[freq], freq2dFFrespArray_zinc[freq])
+        freq2spearman[freq] = corr
+
+    # Overview processed calcium and zinc spatialDFF and traces within ROI at A1
+    if plot_figures:
+        for freq in freq2dFFrespImg_calcium.keys():
+            if display_wideField:
+                # Display gray-scaled wide-field images
+                fig = plt.figure(figsize=(20, 6)) if display_traces else plt.figure(figsize=(10, 6))
+                gs = GridSpec(2, 3, width_ratios=[1, 1, 2]) if display_traces else GridSpec(2, 2, width_ratios=[1, 1])
+
+                ax_calcium_wf = fig.add_subplot(gs[0, 0])
+                ax_zinc_wf = fig.add_subplot(gs[0, 1])
+                ax_traces = fig.add_subplot(gs[:, 2]) if display_traces else None
+                ax_calcium_resp = fig.add_subplot(gs[1, 0])
+                ax_zinc_resp = fig.add_subplot(gs[1, 1])
+                
+                # Plot gray-scaled wide-field images
+                qcams_calcium = freq2dFFresp_calcium[freq][1]['qcam'].tolist()
+                imgs_calcium = np.array(fileIngest.qcams2imgs(qcams_calcium)[0])
+                ax_calcium_wf.imshow(imgs_calcium.mean(axis=(0,-1)), 'gray')
+
+                qcams_zinc = freq2dFFresp_zinc[freq][1]['qcam'].tolist()
+                imgs_zinc = np.array(fileIngest.qcams2imgs(qcams_zinc)[0])
+                ax_zinc_wf.imshow(imgs_zinc.mean(axis=(0,-1)), 'gray')
+                
+                # Plot color-scaled blurred response spatialDFF heatmaps
+                heatmap_calcium = ax_calcium_resp.imshow(freq2dFFrespImg_calcium[freq], cmap='jet')
+                heatmap_zinc = ax_zinc_resp.imshow(freq2dFFrespImg_zinc[freq], cmap='jet')
+                
+                # Add colorbars
+                fig.colorbar(heatmap_calcium, cax=make_axes_locatable(ax_calcium_resp).append_axes("right", size="5%", pad=0.2))
+                fig.colorbar(heatmap_zinc, cax=make_axes_locatable(ax_zinc_resp).append_axes("right", size="5%", pad=0.2))
+                # fig.colorbar(ax_calcium, ax=ax_calcium_resp, fraction=0.035, pad=0.04)
+                # fig.colorbar(ax_zinc, ax=ax_zinc_resp, fraction=0.035, pad=0.04)
+
+            else:
+                # Only plot color-scaled blurred response spatialDFF heatmaps
+                fig, ax = (plt.subplots(1, 3, figsize=(20, 4), gridspec_kw={'width_ratios': [1, 1, 2]}) if display_traces 
+                           else plt.subplots(1, 2, figsize=(10, 4)))
+                ax_calcium_resp = ax[0]
+                ax_zinc_resp = ax[1]
+                ax_traces = ax[2] if display_traces else None
+
+                # Plot color-scaled blurred response spatialDFF heatmaps
+                heatmap_calcium = ax_calcium_resp.imshow(freq2dFFrespImg_calcium[freq], cmap='jet')
+                heatmap_zinc = ax_zinc_resp.imshow(freq2dFFrespImg_zinc[freq], cmap='jet')
+
+                # Add colorbars
+                fig.colorbar(heatmap_calcium, cax=make_axes_locatable(ax_calcium_resp).append_axes("right", size="5%", pad=0.2))
+                fig.colorbar(heatmap_zinc, cax=make_axes_locatable(ax_zinc_resp).append_axes("right", size="5%", pad=0.2))
+
+            if mask_contour is not None:
+                # Add mask contours if Spearman correlation is computed within a polygonal mask
+                if display_wideField:
+                    ax_calcium_wf.plot(mask_contour[:,0], mask_contour[:,1], 'w-', linewidth=2)
+                    ax_zinc_wf.plot(mask_contour[:,0], mask_contour[:,1], 'w-', linewidth=2)
+                ax_calcium_resp.plot(mask_contour[:,0], mask_contour[:,1], 'w-', linewidth=2)
+                ax_zinc_resp.plot(mask_contour[:,0], mask_contour[:,1], 'w-', linewidth=2)
+
+            if display_wideField:
+                ax_calcium_wf.set_title('Calcium', color=palette[0], fontsize=18, fontweight='bold')
+                ax_zinc_wf.set_title('Zinc', color=palette[1], fontsize=18, fontweight='bold')
+            else:
+                ax_calcium_resp.set_title('Calcium', color=palette[0], fontsize=18, fontweight='bold')
+                ax_zinc_resp.set_title('Zinc', color=palette[1], fontsize=18, fontweight='bold')
+
+            if display_traces:
+                # Plot traces within ROI stored in the DataFrames
+                resp_calcium = np.array(freq2dFFresp_calcium[freq][1]['dFF_ROI_linFilt'].tolist())
+                ax_traces.plot(freq2dFFresp_calcium[freq][1]['time'].iloc[0], np.mean(resp_calcium, axis=0), color=palette[0], label='Calcium')
+                for i in range(resp_calcium.shape[0]):
+                    ax_traces.plot(freq2dFFresp_calcium[freq][1]['time'].iloc[0], resp_calcium[i, :], color=palette[0], alpha=0.1)
+
+                resp_zinc = np.array(freq2dFFresp_zinc[freq][1]['dFF_ROI_logFilt_butterFilt'].tolist())
+                ax_traces.plot(freq2dFFresp_zinc[freq][1]['time'].iloc[0], np.mean(resp_zinc, axis=0), color=palette[1], label='Zinc')
+                for j in range(resp_zinc.shape[0]):
+                    ax_traces.plot(freq2dFFresp_zinc[freq][1]['time'].iloc[0], resp_zinc[j, :], color=palette[1], alpha=0.1)
+                
+                ax_traces.set_xlabel('Time (s)', fontsize=14)
+                ax_traces.set_ylabel('ΔF/F', fontsize=14)
+                ax_traces.axvline(x=stimStart, color='k', linestyle='--')
+                ax_traces.legend(loc='upper right', fontsize=14)
+                ax_traces.tick_params(axis='both', labelsize=12)
+                ax_traces.set_title('Traces within ROI stored in DataFrames', fontsize=16)
+                if Yaxis_range is not None:
+                    ax_traces.set_ylim(Yaxis_range)
+            
+            fig.subplots_adjust(wspace=0.3, top=0.85)
+            freq_display = freq/1000 if freq > 500 else freq  # Assume freq is in Hz and convert to kHz for title if freq > 500
+            fig.suptitle(f'{freq_display} kHz: Spearman r = {freq2spearman[freq]:.2f}', fontsize=18, fontweight='bold')
+
+        plt.show()
+
+    return freq2dFFrespArray_calcium, freq2dFFrespArray_zinc, freq2spearman
+
+
+def plot_boxplot(df: pd.DataFrame, x: str, y: str, 
+                 group: str | None = None, 
+                 id: str | list[str] = None, 
+                 palette: list = ['k', 'gray'], 
+                 offset: float = 0.3, 
+                 jitter: float = 0, 
+                 show_xlabel: bool = False, 
+                 Yaxis_range: tuple[float,float] = None, 
+                 title_color: str = None):
+
+    """
+    Plot box-and-whisker plot with optionally paired data points.
+
+    Args:
+        df (pd.DataFrame): Dataframe including columns for X-axis, Y-axis, and pairing ID.
+        x (str): Column name for X-axis categories (e.g., treatment or stimulus type).
+        y (str): Column name for Y-axis values (e.g., response).
+        group (str, optional): Column defining the horizontal subplots (e.g., stimulus type). 
+                               If None, only one subplot is plotted.
+        id (str or list[str], optional): Column name(s) for pairing ID (e.g., subject ID). 
+                                         If None, no paired connections are drawn.
+        palette (list, optional): List of colors for each X-axis category. Defaults to ['k', 'gray'].
+        offset (float, optional): Horizontal offset for paired data points to avoid overlap. Defaults to 0.3.
+        jitter (float, optional): Amount of jitter to apply to individual data points. Defaults to 0 (no jitter).
+        show_xlabel (bool, optional): Whether to display X-axis label. Defaults to False.
+        Yaxis_range (tuple, optional): Set fixed Y-axis range as (y_min, y_max). If None, auto-scales Y-axis.
+        title_color (str, optional): Color of the subplot titles. If None, uses the same color as the left-most bar in the subplot.
+    """
+    
+    x_labels = df[x].unique()
+    groups = [None] if group is None else df[group].unique()
+
+    fig, axes = plt.subplots(1, len(groups), 
+                             figsize=(5+4*(len(groups)-1)+1.5*(len(x_labels)-2), 6), 
+                             sharey=True)
+    if len(groups) == 1:
+        axes = [axes]
+
+    for i, g in enumerate(groups):
+        ax = axes[i]
+        df_sub = df if g is None else df[df[group] == g]
+
+        # Select palette colors re subplot
+        colors = palette if group is None else palette[i*len(x_labels):(i+1)*len(x_labels)]
+
+        # Box-and-whisker plot
+        sns.boxplot(
+            data=df_sub, x=x, y=y, 
+            order=x_labels, width=0.45 if id is None else 0.3, showfliers=False, 
+            showmeans=True, meanline=True, ax=ax
+        )
+
+        # Overlay individual data points
+        np.random.seed(0)  # Make the jitter reproducible
+        sns.stripplot(
+            data=df_sub, x=x, y=y, 
+            order=x_labels, jitter=jitter, size=8, 
+            linewidth=2, color='white', zorder=5, ax=ax
+        )
+
+        # Draw paired connections
+        if id is not None:
+            x_pos = {t: j for j, t in enumerate(x_labels)}
+            for _, df_pair in df_sub.groupby(id, sort=False):
+                y_pre = df_pair[df_pair[x] == x_labels[0]][y].values[0]
+                y_post = df_pair[df_pair[x] == x_labels[1]][y].values[0]
+                ax.plot(
+                    [x_pos[x_labels[0]] + offset, x_pos[x_labels[1]] - offset],
+                    [y_pre, y_post],
+                    color='gray', linewidth=1.5, alpha=0.6, zorder=3
+                )
+
+        # Re-style boxplot and points
+        for j in range(len(x_labels)):
+            # Set boxplot color re treatment
+            ax.patches[j].set_facecolor('white')
+            ax.patches[j].set_edgecolor(colors[j])
+            ax.patches[j].set_linewidth(3)
+            for line in ax.lines[j*6:(j+1)*6]:  # Each box contributes 6 Line2D objects: whisker, whisker, cap, cap, median, mean
+                line.set_color(colors[j])
+                line.set_linewidth(3)
+
+            # Offset stripplot points and set color re treatment
+            offsets = ax.collections[j].get_offsets()
+            if j == 0:
+                offsets[:, 0] += offset
+            else:
+                offsets[:, 0] -= offset
+            ax.collections[j].set_offsets(offsets)
+            ax.collections[j].set_edgecolor(colors[j])
+
+        # Formatting
+        ax.axhline(0, color='gray', linestyle='--', linewidth=2, alpha=0.8, zorder=1)
+        ax.set_xlabel('' if not show_xlabel else x, fontsize=20)
+        ax.tick_params(axis='x', labelsize=20)
+        ax.tick_params(axis='y', labelsize=16)
+
+        if not show_xlabel:
+            for j, label in enumerate(ax.get_xticklabels()):
+                label.set_color(colors[j])  # Color x-axis tick labels
+                label.set_fontweight('bold')
+        
+        if g is not None:
+            ax.set_title(g, fontsize=22, fontweight='bold', color=title_color if title_color is not None else colors[0])
+        
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.grid(False)
+
+        if i == 0:
+            ax.set_ylabel(y, fontsize=20)
+        
+        if Yaxis_range is not None:
+            ax.set_ylim(Yaxis_range)
+
+    plt.show()
+
+
+def plot_barplot(df: pd.DataFrame, x: str, y: str, 
+                 group: str | None = None, 
+                 id: str | list[str] = None, 
+                 palette: list = ['k', 'gray', 'k', 'gray'], 
+                 offset: float = 0.3, 
+                 jitter: float = 0, 
+                 Yaxis_range: tuple[float,float] = None, 
+                 title_color: str = None):
+
+    """
+    Plot barplot with SEM error bars and optionally paired data points.
+
+    Args:
+        df (pd.DataFrame): Dataframe including columns for X-axis, Y-axis, grouping variable, and pairing ID.
+        x (str): Column name for bar categories (e.g., treatment).
+        y (str): Column name for Y-axis values (e.g., response).
+        group (str, optional): Column defining the horizontal subplots (e.g., stimulus type). 
+                               If None, only one subplot is plotted.
+        id (str or list[str], optional): Column name(s) for pairing ID (e.g., subject ID). 
+                                         If None, no paired connections are drawn.
+        palette (list, optional): List of colors for each bar and corresponding datapoints. 
+                                  Defaults to ['k', 'gray', 'k', 'gray'].
+        offset (float, optional): Horizontal offset for paired datapoints to avoid overlap. Defaults to 0.3.
+        jitter (float, optional): Amount of jitter to apply to individual datapoints. Defaults to 0 (no jitter).
+        Yaxis_range (tuple, optional): Set fixed Y-axis range as (y_min, y_max). If None, auto-scales Y-axis.
+        title_color (str, optional): Color of the subplot titles. If None, uses the same color as the left-most bar in the subplot.
+    """
+
+    x_labels = df[x].unique()
+    groups = [None] if group is None else df[group].unique()
+
+    fig, axes = plt.subplots(1, len(groups), 
+                             figsize=(5+4*(len(groups)-1)+3*(len(x_labels)-2), 6), 
+                             sharey=True)
+    if len(groups) == 1:
+        axes = [axes]
+
+    for i, g in enumerate(groups):
+        ax = axes[i]
+        df_sub = df if g is None else df[df[group] == g]
+
+        # Select palette colors re subplot
+        colors = palette if group is None else palette[i*len(x_labels):(i+1)*len(x_labels)]
+
+        # Barplot
+        sns.barplot(data=df_sub, x=x, y=y, order=x_labels, 
+                    errorbar='se', capsize=0.08, width=0.4+0.08*(len(x_labels)-2), ax=ax)
+
+        # Extract datapoints
+        data_points = []
+        for xi in x_labels:
+            vals = df_sub[df_sub[x] == xi][y].values
+            data_points.append(vals)
+
+        bar_positions = np.arange(len(x_labels))
+
+        # Plot individual datapoints
+        np.random.seed(0)  # Make the jitter reproducible
+        for j in range(len(x_labels)):
+            x_pos = bar_positions[j] + offset if j == 0 else bar_positions[j] - offset
+            jitter_vals = np.random.normal(0, jitter, len(data_points[j]))
+            ax.scatter(
+                np.full(len(data_points[j]), x_pos) + jitter_vals, 
+                data_points[j], 
+                facecolors='white', edgecolors=colors[j], 
+                s=80, linewidth=2, zorder=3
+            )
+
+        # Draw paired connections
+        if id is not None:
+            for _, df_pair in df_sub.groupby(id, sort=False):
+                y_pre = df_pair[df_pair[x] == x_labels[0]][y].values[0]
+                y_post = df_pair[df_pair[x] == x_labels[1]][y].values[0]
+                ax.plot(
+                    [bar_positions[0] + offset, bar_positions[1] - offset], 
+                    [y_pre, y_post], 
+                    color='gray', linewidth=1.5, alpha=0.6, zorder=1
+                )
+
+        # Re-style bars
+        for j in range(len(x_labels)):
+            ax.patches[j].set_facecolor(colors[j])
+
+        # Formatting
+        ax.set_xticks(bar_positions)
+        ax.set_xticklabels(x_labels, fontsize=20)
+        ax.set_xlabel('')
+        ax.tick_params(axis='y', labelsize=16)
+
+        for j, label in enumerate(ax.get_xticklabels()):
+            label.set_color(colors[j])  # Color x-axis tick labels
+            label.set_fontweight('bold')
+
+        if g is not None:
+            ax.set_title(g, fontsize=22, fontweight='bold', color=title_color if title_color is not None else colors[0])
+
+        ax.spines['top'].set_visible(False)
+        ax.spines['right'].set_visible(False)
+        ax.grid(False)
+
+        if i == 0:
+            ax.set_ylabel(y, fontsize=20)
+
+        if Yaxis_range is not None:
+            ax.set_ylim(Yaxis_range)
+
+    plt.show()
+
+
+def plot_lineplot_adaptation(df: pd.DataFrame, x: str, y: str, 
+                             group: str | None = None, 
+                             exp_fit: bool = False, 
+                             palette: list = ['k', 'gray'], 
+                             Yaxis_range: tuple[float, float] = None) -> None | dict[str, tuple[float, float, float]]:
+    """
+    Plot line plot of averaged responses to a train of stimuli (e.g., adaptation to consecutive standard tones).
+    Optionally break X-axis to show response amplitudes at the beginning and end of the train.
+
+    Args:
+        df (pd.DataFrame): Dataframe including columns for X-axis (Tone Position), Y-axis (Response ΔF/F) and grouping variable.
+        x (str): Column name for X-axis variable (e.g., standard tone position indices).
+        y (str): Column name for Y-axis values (e.g., response amplitude).
+        group (str, optional): Column defining different conditions to plot in separate lines (e.g., Treatment). 
+                               If None, all data are plotted in one line.
+        exp_fit (bool, optional): Whether to fit an exponential decay function, y = A * exp(-t/tau) + C.
+                                  Only fit if no gap is detected in tone positions (i.e., no break in X-axis).
+                                  If True, returns a dict of parameters re fitted line.
+        palette (list, optional): List of colors for each line. Defaults to ['k', 'gray'].
+        Yaxis_range (tuple, optional): Set fixed Y-axis range as (y_min, y_max). If None, auto-scales Y-axis.
+
+    Returns:
+        None or dict: If `exp_fit` is True, returns a dict mapping group labels to fitted parameters (A, tau, C). 
+                      Otherwise, returns None.
+    """
+
+    # Detect gaps in X-axis variable and optionally break X-axis to show responses at the beginning and end of the train
+    pos = df[x].iloc[0]  # Assume pos is identical across rows
+    pos_diff = np.diff(pos)
+    pos_unique, pos_counts = np.unique(pos_diff, return_counts=True)
+
+    if len(pos_unique) > 2:
+        raise ValueError("Multiple gaps detected in time positions. At most one gap is allowed.")
+    if len(pos_unique) == 2 and exp_fit:
+        raise ValueError("Exponential fitting is not supported when a gap is detected in time positions.")
+    if exp_fit:
+        # Initialize a dict to store fitted parameters re curve
+        fit_params = {}
+        # Define the exponential decay function
+        def exp_decay(t, A, tau, C):
+            return A * np.exp(-t / tau) + C
+    
+    no_gap = (len(pos_unique) == 1)
+
+    # Assume the most frequent spacing as the regular tick spacing
+    tick_spacing = pos_unique[pos_counts.argmax()]
+
+    if no_gap:
+        fig, ax1 = plt.subplots(figsize=(pos.shape[0], 6))
+        ax2 = None
+    else:
+        # Assume the least frequent spacing as the gap where X-axis is broken
+        split_idx = np.where(pos_diff == pos_unique[pos_counts.argmin()])[0][0]  # Index of the last element in the left Axis
+
+        # Calculate the range of X-axis for both Axes to set width ratios
+        range_left = split_idx + tick_spacing
+        range_right = pos.shape[0] - split_idx - 2 + tick_spacing
+
+        # Break the X-axis into two portions by creating two subplots with shared Y-axis
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(pos.shape[0], 6), sharey=True, 
+                                       gridspec_kw={'width_ratios': [range_left, range_right]})  # Equal tick spacing
+        fig.subplots_adjust(wspace=0.1)  # Adjust spacing between Axes
+
+    if group is None:
+        # Plot all data in one line
+        response = np.array(df[y].tolist())
+        # Not including NaN values in mean and SEM calculation if any
+        response_mean = np.nanmean(response, axis=0)
+        response_sem = np.nanstd(response, axis=0, ddof=1) / np.sqrt(np.sum(~np.isnan(response), axis=0))  # Sample SEM (ddof=1)
+
+        if no_gap:
+            ax1.errorbar(pos, response_mean, yerr=response_sem, 
+                         capsize=3, capthick=1.5, marker='o', 
+                         linestyle='none' if exp_fit else '-', 
+                         linewidth=2.5, color=palette[0])
+            if exp_fit:
+                # Fit an exponential decay function to averaged data: y = A * exp(-t/tau) + C
+                params, _ = curve_fit(exp_decay, pos.astype(np.float64), response_mean, maxfev=1000000, 
+                                      p0 = [response_mean[0]-response_mean[-1], 1, response_mean[-1]])  # Initial guess
+                A_fit, tau_fit, C_fit = params
+                # Plot fitted curve
+                t_smooth = np.linspace(pos.min(), pos.max(), 100*(pos.shape[0]-1)+1)
+                y_smooth = exp_decay(t_smooth, A_fit, tau_fit, C_fit)
+                ax1.plot(t_smooth, y_smooth, linewidth=2.5, color=palette[0])
+                fit_params['all'] = params
+        else:
+            # Left Axis: standard responses before the first deviant response
+            ax1.errorbar(pos[:split_idx+1], response_mean[:split_idx+1], yerr=response_sem[:split_idx+1], 
+                         capsize=3, capthick=1.5, marker='o', linewidth=2.5, color=palette[0])
+            # Right Axis: standard responses after the last deviant response
+            ax2.errorbar(pos[split_idx+1:], response_mean[split_idx+1:], yerr=response_sem[split_idx+1:], 
+                         capsize=3, capthick=1.5, marker='o', linewidth=2.5, color=palette[0])
+    else:
+        # Plot different lines re group
+        for i, g in enumerate(df[group].unique()):
+            response = np.array(df[df[group] == g][y].tolist())
+            response_mean = np.nanmean(response, axis=0)
+            response_sem = np.nanstd(response, axis=0, ddof=1) / np.sqrt(np.sum(~np.isnan(response), axis=0))
+
+            if no_gap:
+                ax1.errorbar(pos, response_mean, yerr=response_sem, 
+                             capsize=3, capthick=1.5, marker='o', 
+                             linestyle='none' if exp_fit else '-', 
+                             linewidth=2.5, color=palette[i], label=g)
+                if exp_fit:
+                    # Fit an exponential decay function to averaged data: y = A * exp(-t/tau) + C
+                    params, _ = curve_fit(exp_decay, pos.astype(np.float64), response_mean, maxfev=1000000, 
+                                          p0 = [response_mean[0]-response_mean[-1], 1, response_mean[-1]])  # Initial guess
+                    A_fit, tau_fit, C_fit = params
+                    # Plot fitted curve
+                    t_smooth = np.linspace(pos.min(), pos.max(), 100*(pos.shape[0]-1)+1)
+                    y_smooth = exp_decay(t_smooth, A_fit, tau_fit, C_fit)
+                    ax1.plot(t_smooth, y_smooth, linewidth=2.5, color=palette[i])
+                    fit_params[g] = params
+            else:
+                ax1.errorbar(pos[:split_idx+1], response_mean[:split_idx+1], yerr=response_sem[:split_idx+1], 
+                             capsize=3, capthick=1.5, marker='o', linewidth=2.5, color=palette[i], label=g)
+                ax2.errorbar(pos[split_idx+1:], response_mean[split_idx+1:], yerr=response_sem[split_idx+1:], 
+                             capsize=3, capthick=1.5, marker='o', linewidth=2.5, color=palette[i], label=g)
+
+    if no_gap:
+        ax1.set_xlim(pos[0] - tick_spacing*0.5, pos[-1] + tick_spacing*0.5)
+        ax1.set_xticks(np.arange(pos[0], pos[-1] + tick_spacing, tick_spacing))
+        ax1.spines['right'].set_visible(False)
+        ax1.spines['top'].set_visible(False)
+        if group is not None:
+            ax1.legend(fontsize=16, loc='upper right')
+    else:
+        # Set X-axis limits corresponding to width ratios
+        ax1.set_xlim(pos[0] - tick_spacing*0.5, pos[split_idx] + tick_spacing*0.5)  
+        ax2.set_xlim(pos[split_idx+1] - tick_spacing*0.5, pos[-1] + tick_spacing*0.5)
+
+        # Set identical tick spacing for both panels
+        ax1.set_xticks(np.arange(pos[0], pos[split_idx] + tick_spacing, tick_spacing))
+        ax2.set_xticks(np.arange(pos[split_idx+1], pos[-1] + tick_spacing, tick_spacing))
+
+        # Hide the spines in ax1 and ax2
+        for spine in ["right", "top"]:
+            ax1.spines[spine].set_visible(False)
+        for spine in ["left", "right", "top"]:
+            ax2.spines[spine].set_visible(False)
+        
+        # Add slanted break marks at corners of Axes
+        d = 2  # Proportion of vertical to horizontal extent of the slanted line
+        kwargs = dict(marker=[(-1, -d), (1, d)], markersize=14,
+                      linestyle="none", color='k', mec='k', mew=1, clip_on=False)
+        ax1.plot(1, 0, transform=ax1.transAxes, **kwargs)
+        ax2.plot(0, 0, transform=ax2.transAxes, **kwargs)
+
+        # Remove left ticks in ax2
+        ax2.tick_params(left=False, labelleft=False)
+
+        if group is not None:
+            ax2.legend(fontsize=16, loc='upper right')
+
+    ax1.set_ylabel(y, fontsize=18)
+    for ax in [ax1] if no_gap else [ax1, ax2]:
+        ax.tick_params(axis='both', labelsize=16)
+        if Yaxis_range is not None:
+            ax.set_ylim(Yaxis_range)
+
+    # Add shared X-axis label centered below the two panels
+    fig.text(0.5, 0.01, x, ha='center', fontsize=18)
+
+    plt.show()
+
+    if exp_fit:
+        return fit_params
