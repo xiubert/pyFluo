@@ -413,7 +413,7 @@ def plot_traces(df: pd.DataFrame, dB_plot: int | list[int] | None = 80, resp_col
         current_ax.set_title(f"{treatment}", size=12) if sepPlot else None
         current_ax.axvline(x=stimStart, color='k', linestyle='--')
         current_ax.legend(loc='upper right')
-        if Yaxis_range:
+        if Yaxis_range is not None:
             current_ax.set_ylim(Yaxis_range)
     
     # Format the title based on 'dB_plot' type
@@ -1754,7 +1754,9 @@ def plot_oddball_wholeTrace(df: pd.DataFrame,
                             plot_traces: bool = True, 
                             plot_errBar: bool = False, 
                             stimStart: float = 3.0, 
+                            Xaxis_range: tuple[float,float] = None, 
                             Yaxis_range: tuple[float,float] = None, 
+                            Yaxis_label: str = None, 
                             show_deviant_dots: bool = False, 
                             show_standard_dots: bool = False, 
                             trace_color: str = 'k',
@@ -1785,7 +1787,9 @@ def plot_oddball_wholeTrace(df: pd.DataFrame,
         plot_errBar (bool, optional): Whether to plot error bars.
                                       If True, SEM is plotted as shaded area instead of individual traces.
         stimStart (float, optional): Time (in seconds) when the first stimulus starts.
+        Xaxis_range (tuple, optional): Set fixed X-axis range as (x_min, x_max). If None, auto-scales X-axis.
         Yaxis_range (tuple, optional): Set fixed Y-axis range as (y_min, y_max). If None, auto-scales Y-axis.
+        Yaxis_label (str, optional): Label for Y-axis. If None, defaults to the column name for response traces in df.
         show_deviant_dots (bool, optional): If True, show deviant tone onset as red dots beneath the traces.
         show_standard_dots (bool, optional): If True, show standard tone onset as black dots beneath the traces.
         trace_color (str, optional): Color for average trace and individual traces/error bars. Defaults to 'k' (black).
@@ -1868,6 +1872,9 @@ def plot_oddball_wholeTrace(df: pd.DataFrame,
             fig, ax = plt.subplots(n_pulses, 1, figsize=(16, 4*n_pulses))
             if n_pulses == 1:
                 ax = [ax]
+            if n_pulses == 1:
+                # Increase vertical space between subplot title and figure title
+                plt.subplots_adjust(top=0.8)
             if isinstance(onset_times, tuple):
                 plt.subplots_adjust(hspace=0.3)
             else:
@@ -1887,8 +1894,8 @@ def plot_oddball_wholeTrace(df: pd.DataFrame,
                 else:
                     for j in range(traces.shape[0]):
                         ax[i].plot(time, traces[j, :], linewidth=1.5, color='gray' if trace_color == 'k' else trace_color, alpha=0.3)
-                ax[i].set_ylabel(resp_col, fontsize=14)
-                ax[i].axvline(x=stimStart, color='k', linestyle='--')
+                ax[i].set_ylabel(Yaxis_label if Yaxis_label is not None else resp_col, fontsize=16)
+                ax[i].axvline(x=stimStart, color='k', linestyle='--', linewidth=2)
 
                 y_min, y_max = ax[i].get_ylim()
                 dot_y = y_min + 0.1 * (y_max - y_min)  # slightly above bottom
@@ -1901,13 +1908,20 @@ def plot_oddball_wholeTrace(df: pd.DataFrame,
                                   color=std_color, edgecolors=std_color, s=20, zorder=1, alpha=0.2, label="Standard tone")
                 if not (show_deviant_dots or show_standard_dots):
                     for m, deviant in enumerate(deviant_times):
-                        ax[i].axvline(x=deviant, color=dev_color, alpha=0.4, label="Deviant tone" if m == 0 else None)
+                        ax[i].axvline(x=deviant, color=dev_color, alpha=0.4, label="Deviant tone" if m == 0 else None, linewidth=2)
                     for n, standard in enumerate(standard_times):
-                        ax[i].axvline(x=standard, color=std_color, alpha=0.08, label="Standard tone" if n == 0 else None)
-                if Yaxis_range:
+                        ax[i].axvline(x=standard, color=std_color, alpha=0.08, label="Standard tone" if n == 0 else None, linewidth=2)
+                if Yaxis_range is not None:
                     ax[i].set_ylim(Yaxis_range)
                 ax[i].set_title(f"{pulse}", fontsize=14)
-                ax[i].legend(fontsize=11, loc='upper right')
+                ax[i].legend(fontsize=14, loc='upper right')
+                ax[i].spines['top'].set_visible(False)
+                ax[i].spines['right'].set_visible(False)
+                ax[i].spines['bottom'].set_linewidth(2)
+                ax[i].spines['left'].set_linewidth(2)
+                ax[i].tick_params(axis='both', labelsize=14, width=2)
+                if Xaxis_range is not None:
+                    ax[i].set_xlim(Xaxis_range)
 
             if negative_exclude:
                 if 'butterFilt' in resp_col:
@@ -1951,7 +1965,7 @@ def plot_oddball_wholeTrace(df: pd.DataFrame,
                                'standard_times': standard_times})
 
         if plot_traces:
-            ax[-1].set_xlabel('time (s)', fontsize=14)
+            ax[-1].set_xlabel('time (s)', fontsize=16)
             fig.suptitle(f"Oddball Paradigm: {treat}", fontsize=16)
 
     if plot_traces:
@@ -1968,13 +1982,18 @@ def plot_oddball_trace_reTone(df_resp_peak: pd.DataFrame,
                               x_col: str = 'treatment', 
                               y_col: str = 'pulse', 
                               within_col: str = 'stimulus', 
-                              within_colors: str | dict = None, 
+                              x_order: list = None, 
+                              y_order: list = None, 
+                              within_order: list = None, 
+                              color_palette: str | dict = None, 
                               Yaxis_label: str = 'ΔF/F subtracting baseline', 
+                              Xaxis_range: tuple[float,float] = None, 
                               Yaxis_range: tuple[float,float] = None, 
                               plot_traces: bool = False, 
                               alpha_traces: float = 0.1, 
                               plot_errBar: bool = False, 
                               alpha_errBar: float = 0.05, 
+                              stimStart: float = 0.0, 
                               **kwargs) -> plt.Figure:
     """
     Plot average traces across multiple conditions for comparison. 
@@ -1991,7 +2010,12 @@ def plot_oddball_trace_reTone(df_resp_peak: pd.DataFrame,
 
     Args:
         df_resp_peak (pd.DataFrame): Dataframe including individual response traces and experimental conditions.
-                                     Including columns referenced by: trace_col, x_col, y_col, within_col .
+                                     Including columns referenced by: trace_col, x_col, y_col, within_col.
+        trace_col (str, optional): Column name containing response traces. Each cell should contain either:
+                                   - a 1D array of shape [frame], representing a single trace, or
+                                   - a 2D array of shape [traceNumber, frame], representing multiple traces.
+                                   If multiple rows belong to the same plotting condition, traces from all
+                                   rows are combined using np.vstack() before plotting. Defaults to 'trace'.
         x_col (str, optional): Column used for x-axis grouping (e.g., treatment). Defaults to 'treatment'. 
                                If None, plots collapse to a single column. 
                                If 'post' is included in x_col value, the corresponding trace will be plotted with alpha=0.5.
@@ -2000,16 +2024,29 @@ def plot_oddball_trace_reTone(df_resp_peak: pd.DataFrame,
         within_col (str, optional): Column used for within-subplot grouping (e.g., stimulus type).
                                     Defaults to 'stimulus'.
                                     If None, only one trace is plotted in each subplot.
-        within_colors (str | dict, optional): Either a string (if within_col is None) or a dict mapping values in within_col to trace colors.
-                                              Defaults to 'k' if within_col is None else {'Deviant': 'r', 'Standard': 'k'}.
+        x_order (list, optional): Order of values in x_col for arranging subplot columns.
+                                  If None, uses the order of first appearance in df_resp_peak.
+        y_order (list, optional): Order of values in y_col for arranging subplot rows.
+                                  If None, uses the order of first appearance in df_resp_peak.
+        within_order (list, optional): Order of values in within_col for displaying legend entries within each subplot.
+                                       If None, uses the order of first appearance in df_resp_peak.
+        color_palette (str | dict, optional): Either a single color string applied to all traces, or a dict mapping condition keys to colors.
+                                              Supported dict key formats are:
+                                                  within, (x, within), (y, within) or (x, y, within), 
+                                                  where x, y and within are values from x_col, y_col and within_col, respectively.
+                                              Defaults to 'k' if within_col is None, otherwise {'Deviant': 'r', 'Standard': 'k'}.
         Yaxis_label (str, optional): Label for Y-axis. Defaults to 'ΔF/F subtracting baseline' 
                                      representing Y = Δ(ΔF/F) = ΔF/F trace - baseline ΔF/F.
+        Xaxis_range (tuple, optional): Set fixed X-axis range as (x_min, x_max). If None, auto-scales X-axis.
         Yaxis_range (tuple, optional): Set fixed Y-axis range as (y_min, y_max). If None, auto-scales Y-axis.
         plot_traces (bool, optional): Whether to plot individual traces.
         alpha_traces (float, optional): Transparency for individual traces.
         plot_errBar (bool. optional): Whether to plot SEM as shading (error bars).
         alpha_errBar (float, optional): Transparency for error bars.
+        stimStart (float, optional): Stimulus start time (in seconds). Defaults to 0.0.
         **kwargs: Optional keyword arguments.
+            - Example: delayAdjust (float, optional): Adjustment in time (s) for frame data acquisition.
+                                                      Defaults to -0.025 sec.
 
     Returns:
         fig (plt.Figure): Figure object containing the plotted traces.
@@ -2024,30 +2061,45 @@ def plot_oddball_trace_reTone(df_resp_peak: pd.DataFrame,
 
     # If any grouping column is not provided, collapse the plot to fewer dimensions
     df_plot = df_resp_peak.copy()
+    x_col_input = x_col
     if x_col is None:
         df_plot["_x"] = ""
         x_col = "_x"
 
+    y_col_input = y_col
     if y_col is None:
         df_plot["_y"] = ""
         y_col = "_y"
 
-    within_col_input = within_col  # Store original within_col input for legend adding logic
+    within_col_input = within_col  # Store original within_col input for legend adding
     if within_col is None:
         df_plot["_within"] = "all"
         within_col = "_within"
-        # Plot all traces in black by default if only one trace is in each subplot
-        within_colors = {"all": "k"} if within_colors is None else {"all": within_colors}
-    else:
-        # Map each value in within_col to a color
-        within_colors = {'Deviant': 'r', 'Standard': 'k'} if within_colors is None else within_colors
 
-    x_label = df_plot[x_col].unique()
-    y_label = df_plot[y_col].unique()
+        if color_palette is None:
+            # Plot all traces in black by default if only one trace is in each subplot
+            color_palette = {"all": "k"}
+        elif isinstance(color_palette, str):
+            color_palette = {"all": color_palette}
+    else:
+        if color_palette is None:
+            color_palette = {'Deviant': 'r', 'Standard': 'k'}
+        elif isinstance(color_palette, str):
+            color_palette = {stim: color_palette for stim in df_plot[within_col].unique()}
+
+    x_label = x_order if x_order is not None else df_plot[x_col].unique()
+    y_label = y_order if y_order is not None else df_plot[y_col].unique()
+    within_label = within_order if within_order is not None else df_plot[within_col].unique()
     n_x_label = len(x_label)
     n_y_label = len(y_label)
     
-    fig, ax = plt.subplots(n_y_label, n_x_label, figsize=(8+2*n_x_label, 4+2*n_y_label))
+    fig, ax = plt.subplots(
+        n_y_label, n_x_label, 
+        figsize=(
+            8+2*n_x_label if x_col_input is not None else 8, 
+            4+2*n_y_label if y_col_input is not None else 5
+        )
+    )
     
     # Force ax to be 2D of shape (n_y_label, n_x_label)
     if n_y_label == 1 and n_x_label == 1:
@@ -2059,47 +2111,79 @@ def plot_oddball_trace_reTone(df_resp_peak: pd.DataFrame,
 
     for i, y_val in enumerate(y_label):
         for j, x_val in enumerate(x_label):
-            for stim in within_colors.keys():  # Keep same label sequence as in dict 'within_colors'
+            for stim in within_label:
                 df_subset = df_plot[
                     (df_plot[x_col] == x_val) & 
                     (df_plot[y_col] == y_val) & 
                     (df_plot[within_col] == stim)
                 ]
                 if df_subset.empty:
-                    continue  # Skip plotting if no data for this combination of x, y, and within values
-                trace = df_subset[trace_col].iloc[0]
-                time = signalProcess.getTimeVec(trace.shape[-1], delayAdjust = delayAdjust, **kwargs)
-                trace_mean, trace_psem, trace_msem = signalProcess.meanPlusMinusSem(trace, ignoreNaN=True)  # Ignore NaN values (negative responses excluded)
+                    # Skip plotting if no data for this combination of x, y, and within values  
+                    continue
+                elif len(df_subset) == 1:
+                    trace = df_subset[trace_col].iloc[0]
+                else:
+                    # Vstack traces across rows if multiple rows exist
+                    trace = np.vstack(df_subset[trace_col].tolist())
                 
-                ax[i,j].plot(time, trace_mean, color=within_colors[stim], alpha=0.5 if 'post' in str(x_val).lower() else 1.0, label=f'{stim}', linewidth=3)
-                if plot_errBar:
-                    # Add error bars
-                    ax[i,j].fill_between(time, trace_psem, trace_msem, color=within_colors[stim], alpha=alpha_errBar)
-                if plot_traces:
-                    # Add individual traces
-                    for k in range(trace.shape[0]):
-                        ax[i,j].plot(time, trace[k, :], color=within_colors[stim], alpha=alpha_traces, linewidth=2)
+                time = signalProcess.getTimeVec(trace.shape[-1], delayAdjust = delayAdjust, **kwargs)
+
+                trace_color = (
+                    color_palette.get((x_val, y_val, stim))
+                    or color_palette.get((x_val, stim))
+                    or color_palette.get((y_val, stim))
+                    or color_palette.get(stim)
+                )
+                if trace_color is None:
+                    raise KeyError(
+                        f"No color specified for x='{x_val}', y='{y_val}', within='{stim}'."
+                    )
+                
+                if trace.ndim == 1:
+                    # Directly plot without error bars if trace is 1D of shape [frame]
+                    ax[i, j].plot(time, trace, color=trace_color, alpha=0.5 if 'post' in str(x_val).lower() else 1.0, label=f'{stim}', linewidth=3)
+                elif trace.ndim == 2:
+                    # Average across trials and plot error bars if trace is 2D of shape [traceNumber, frame]
+                    trace_mean, trace_psem, trace_msem = signalProcess.meanPlusMinusSem(trace, ignoreNaN=True)  # Ignore NaN values (negative responses excluded)
+                    ax[i,j].plot(time, trace_mean, color=trace_color, alpha=0.5 if 'post' in str(x_val).lower() else 1.0, label=f'{stim}', linewidth=3)
+                    if plot_errBar:
+                        # Add error bars
+                        ax[i,j].fill_between(time, trace_psem, trace_msem, color=trace_color, alpha=alpha_errBar)
+                    if plot_traces:
+                        # Add individual traces
+                        for k in range(trace.shape[0]):
+                            ax[i,j].plot(time, trace[k, :], color=trace_color, alpha=alpha_traces, linewidth=2)
+                else:
+                    raise ValueError(f"Traces must be either 1D (frame,) or 2D (traceNumber, frame), got shape {trace.shape}.")
             
-            ax[i,j].axvline(x=0, color='k', linestyle='--')
-            if Yaxis_range:
+            ax[i,j].axvline(x=stimStart, color='k', linestyle='--', linewidth=2)
+            if Xaxis_range is not None:
+                ax[i,j].set_xlim(Xaxis_range)
+            if Yaxis_range is not None:
                 ax[i,j].set_ylim(Yaxis_range)
-            if (within_col_input is not None) and (i == 0) and (j == n_x_label - 1):
-                # Add legend only in the top-right subplot if within_col is provided (multiple traces in each subplot)
-                ax[i,j].legend(fontsize=14, loc='upper right')
+            if within_col_input is not None:
+                if any(isinstance(key, tuple) and len(key) > 1 for key in color_palette.keys()):
+                    # Add legend in every subplot if trace color sets are different across subplots
+                    ax[i, j].legend(fontsize=16, loc='upper right')
+                elif (within_col_input is not None) and (i == 0) and (j == n_x_label - 1):
+                    # Add legend only in the top-right subplot if within_col is provided (multiple traces in each subplot)
+                    ax[i, j].legend(fontsize=16, loc='upper right')
             ax[i, j].spines['top'].set_visible(False)
             ax[i, j].spines['right'].set_visible(False)
-            ax[i, j].tick_params(axis='both', labelsize=12)
+            ax[i, j].spines['bottom'].set_linewidth(2)
+            ax[i, j].spines['left'].set_linewidth(2)
+            ax[i, j].tick_params(axis='both', labelsize=18, width=2)
 
             if i == 0:
                 # Add treatment titles
-                ax[i,j].set_title(x_val, pad=15, fontsize=16, fontweight='bold')
+                ax[i,j].set_title(x_val, pad=15, fontsize=20, fontweight='bold')
             if i == n_y_label - 1:
                 # Add X-axis labels
-                ax[i,j].set_xlabel('time (s)', fontsize=16)
+                ax[i,j].set_xlabel('time (s)', fontsize=18)
             if j == 0:
-                ax[i,j].set_ylabel(Yaxis_label, fontsize=16)
+                ax[i,j].set_ylabel(Yaxis_label, fontsize=18)
                 # Add pulse protocol names
-                ax[i,j].text(-0.6, 0.5, y_val, fontsize=16, fontweight='bold', rotation=0, 
+                ax[i,j].text(-0.6, 0.5, y_val, fontsize=20, fontweight='bold', rotation=0, 
                              ha='center', va='center', transform=ax[i,j].transAxes)
 
     plt.tight_layout(rect=[0.05, 0, 1, 1])  # extra left margin for exporting to pdf
@@ -2257,11 +2341,15 @@ def plot_blurred_respSpatialDFF(freq2dFFresp_calcium: dict, freq2dFFresp_zinc: d
 def plot_boxplot(df: pd.DataFrame, x: str, y: str, 
                  group: str | None = None, 
                  id: str | list[str] = None, 
+                 x_order: list = None, 
+                 group_order: list = None, 
                  palette: list = ['k', 'gray'], 
                  offset: float = 0.3, 
                  jitter: float = 0, 
                  show_xlabel: bool = False, 
+                 Yaxis_label: str = None, 
                  Yaxis_range: tuple[float,float] = None, 
+                 axhline: None | int | float | list = 0, 
                  title_color: str = None):
 
     """
@@ -2275,16 +2363,30 @@ def plot_boxplot(df: pd.DataFrame, x: str, y: str,
                                If None, only one subplot is plotted.
         id (str or list[str], optional): Column name(s) for pairing ID (e.g., subject ID). 
                                          If None, no paired connections are drawn.
+        x_order (list, optional): Order of values in x for arranging X-axis categories.
+                                  If None, uses the order of first appearance in df.
+        group_order (list, optional): Order of values in group for arranging subplot columns.
+                                      If None, uses the order of first appearance in df.
         palette (list, optional): List of colors for each X-axis category. Defaults to ['k', 'gray'].
         offset (float, optional): Horizontal offset for paired data points to avoid overlap. Defaults to 0.3.
         jitter (float, optional): Amount of jitter to apply to individual data points. Defaults to 0 (no jitter).
         show_xlabel (bool, optional): Whether to display X-axis label. Defaults to False.
+        Yaxis_label (str, optional): Label for Y-axis. If None, uses the column name y.
         Yaxis_range (tuple, optional): Set fixed Y-axis range as (y_min, y_max). If None, auto-scales Y-axis.
+        axhline (None or int or float or list, optional): Horizontal line(s) to draw on the plot. 
+                                                          If a list, horizontal lines are drawn at each value in the list.
+                                                          If None, no line is drawn.
         title_color (str, optional): Color of the subplot titles. If None, uses the same color as the left-most bar in the subplot.
     """
     
-    x_labels = df[x].unique()
-    groups = [None] if group is None else df[group].unique()
+    x_labels = x_order if x_order is not None else df[x].unique()
+    if group is None:
+        groups = [None]
+    else:
+        if group_order is not None:
+            groups = group_order
+        else:
+            groups = df[group].unique()
 
     fig, axes = plt.subplots(1, len(groups), 
                              figsize=(5+4*(len(groups)-1)+1.5*(len(x_labels)-2), 6), 
@@ -2346,10 +2448,18 @@ def plot_boxplot(df: pd.DataFrame, x: str, y: str,
             ax.collections[j].set_edgecolor(colors[j])
 
         # Formatting
-        ax.axhline(0, color='gray', linestyle='--', linewidth=2, alpha=0.8, zorder=1)
+        if axhline is None:
+            pass
+        elif isinstance(axhline, (int, float)):
+            ax.axhline(axhline, color='gray', linestyle='--', linewidth=2.5, alpha=0.8, zorder=1)
+        elif isinstance(axhline, list):
+            for y_val in axhline:
+                ax.axhline(y_val, color='gray', linestyle='--', linewidth=2.5, alpha=0.8, zorder=1)
+        else:
+            raise ValueError("axhline must be None, a number, or a list of numbers.")
         ax.set_xlabel('' if not show_xlabel else x, fontsize=20)
-        ax.tick_params(axis='x', labelsize=20)
-        ax.tick_params(axis='y', labelsize=16)
+        ax.tick_params(axis='x', labelsize=20, width=2)
+        ax.tick_params(axis='y', labelsize=16, width=2)
 
         if not show_xlabel:
             for j, label in enumerate(ax.get_xticklabels()):
@@ -2361,10 +2471,12 @@ def plot_boxplot(df: pd.DataFrame, x: str, y: str,
         
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_linewidth(2)
+        ax.spines['left'].set_linewidth(2)
         ax.grid(False)
 
         if i == 0:
-            ax.set_ylabel(y, fontsize=20)
+            ax.set_ylabel(Yaxis_label if Yaxis_label is not None else y, fontsize=20)
         
         if Yaxis_range is not None:
             ax.set_ylim(Yaxis_range)
@@ -2375,6 +2487,8 @@ def plot_boxplot(df: pd.DataFrame, x: str, y: str,
 def plot_barplot(df: pd.DataFrame, x: str, y: str, 
                  group: str | None = None, 
                  id: str | list[str] = None, 
+                 x_order: list = None, 
+                 group_order: list = None, 
                  palette: list = ['k', 'gray', 'k', 'gray'], 
                  offset: float = 0.3, 
                  jitter: float = 0, 
@@ -2392,6 +2506,10 @@ def plot_barplot(df: pd.DataFrame, x: str, y: str,
                                If None, only one subplot is plotted.
         id (str or list[str], optional): Column name(s) for pairing ID (e.g., subject ID). 
                                          If None, no paired connections are drawn.
+        x_order (list, optional): Order of values in x for arranging X-axis categories.
+                                  If None, uses the order of first appearance in df.
+        group_order (list, optional): Order of values in group for arranging subplot columns.
+                                      If None, uses the order of first appearance in df.
         palette (list, optional): List of colors for each bar and corresponding datapoints. 
                                   Defaults to ['k', 'gray', 'k', 'gray'].
         offset (float, optional): Horizontal offset for paired datapoints to avoid overlap. Defaults to 0.3.
@@ -2400,11 +2518,17 @@ def plot_barplot(df: pd.DataFrame, x: str, y: str,
         title_color (str, optional): Color of the subplot titles. If None, uses the same color as the left-most bar in the subplot.
     """
 
-    x_labels = df[x].unique()
-    groups = [None] if group is None else df[group].unique()
+    x_labels = x_order if x_order is not None else df[x].unique()
+    if group is None:
+        groups = [None]
+    else:
+        if group_order is not None:
+            groups = group_order
+        else:
+            groups = df[group].unique()
 
     fig, axes = plt.subplots(1, len(groups), 
-                             figsize=(5+4*(len(groups)-1)+3*(len(x_labels)-2), 6), 
+                             figsize=(5+4*(len(groups)-1)+1.5*(len(x_labels)-2), 6), 
                              sharey=True)
     if len(groups) == 1:
         axes = [axes]
@@ -2459,7 +2583,8 @@ def plot_barplot(df: pd.DataFrame, x: str, y: str,
         ax.set_xticks(bar_positions)
         ax.set_xticklabels(x_labels, fontsize=20)
         ax.set_xlabel('')
-        ax.tick_params(axis='y', labelsize=16)
+        ax.tick_params(axis='x', width=2)
+        ax.tick_params(axis='y', labelsize=16, width=2)
 
         for j, label in enumerate(ax.get_xticklabels()):
             label.set_color(colors[j])  # Color x-axis tick labels
@@ -2470,6 +2595,8 @@ def plot_barplot(df: pd.DataFrame, x: str, y: str,
 
         ax.spines['top'].set_visible(False)
         ax.spines['right'].set_visible(False)
+        ax.spines['bottom'].set_linewidth(2)
+        ax.spines['left'].set_linewidth(2)
         ax.grid(False)
 
         if i == 0:
@@ -2485,6 +2612,7 @@ def plot_lineplot_adaptation(df: pd.DataFrame, x: str, y: str,
                              group: str | None = None, 
                              exp_fit: bool = False, 
                              palette: list = ['k', 'gray'], 
+                             markers: list = ['o', 'o'], 
                              Yaxis_range: tuple[float, float] = None) -> None | dict[str, tuple[float, float, float]]:
     """
     Plot line plot of averaged responses to a train of stimuli (e.g., adaptation to consecutive standard tones).
@@ -2500,6 +2628,8 @@ def plot_lineplot_adaptation(df: pd.DataFrame, x: str, y: str,
                                   Only fit if no gap is detected in tone positions (i.e., no break in X-axis).
                                   If True, returns a dict of parameters re fitted line.
         palette (list, optional): List of colors for each line. Defaults to ['k', 'gray'].
+        markers (list, optional): Marker styles for each group. Must have the same order as `palette`.
+                                  Defaults to ['o', 'o'].
         Yaxis_range (tuple, optional): Set fixed Y-axis range as (y_min, y_max). If None, auto-scales Y-axis.
 
     Returns:
@@ -2553,7 +2683,7 @@ def plot_lineplot_adaptation(df: pd.DataFrame, x: str, y: str,
 
         if no_gap:
             ax1.errorbar(pos, response_mean, yerr=response_sem, 
-                         capsize=3, capthick=1.5, marker='o', 
+                         capsize=3, capthick=1.5, marker=markers[0], 
                          linestyle='none' if exp_fit else '-', 
                          linewidth=2.5, color=palette[0])
             if exp_fit:
@@ -2569,10 +2699,10 @@ def plot_lineplot_adaptation(df: pd.DataFrame, x: str, y: str,
         else:
             # Left Axis: standard responses before the first deviant response
             ax1.errorbar(pos[:split_idx+1], response_mean[:split_idx+1], yerr=response_sem[:split_idx+1], 
-                         capsize=3, capthick=1.5, marker='o', linewidth=2.5, color=palette[0])
+                         capsize=3, capthick=1.5, marker=markers[0], linewidth=2.5, color=palette[0])
             # Right Axis: standard responses after the last deviant response
             ax2.errorbar(pos[split_idx+1:], response_mean[split_idx+1:], yerr=response_sem[split_idx+1:], 
-                         capsize=3, capthick=1.5, marker='o', linewidth=2.5, color=palette[0])
+                         capsize=3, capthick=1.5, marker=markers[0], linewidth=2.5, color=palette[0])
     else:
         # Plot different lines re group
         for i, g in enumerate(df[group].unique()):
@@ -2582,7 +2712,7 @@ def plot_lineplot_adaptation(df: pd.DataFrame, x: str, y: str,
 
             if no_gap:
                 ax1.errorbar(pos, response_mean, yerr=response_sem, 
-                             capsize=3, capthick=1.5, marker='o', 
+                             capsize=3, capthick=1.5, marker=markers[i], 
                              linestyle='none' if exp_fit else '-', 
                              linewidth=2.5, color=palette[i], label=g)
                 if exp_fit:
@@ -2597,15 +2727,17 @@ def plot_lineplot_adaptation(df: pd.DataFrame, x: str, y: str,
                     fit_params[g] = params
             else:
                 ax1.errorbar(pos[:split_idx+1], response_mean[:split_idx+1], yerr=response_sem[:split_idx+1], 
-                             capsize=3, capthick=1.5, marker='o', linewidth=2.5, color=palette[i], label=g)
+                             capsize=3, capthick=1.5, marker=markers[i], linewidth=2.5, color=palette[i], label=g)
                 ax2.errorbar(pos[split_idx+1:], response_mean[split_idx+1:], yerr=response_sem[split_idx+1:], 
-                             capsize=3, capthick=1.5, marker='o', linewidth=2.5, color=palette[i], label=g)
+                             capsize=3, capthick=1.5, marker=markers[i], linewidth=2.5, color=palette[i], label=g)
 
     if no_gap:
         ax1.set_xlim(pos[0] - tick_spacing*0.5, pos[-1] + tick_spacing*0.5)
         ax1.set_xticks(np.arange(pos[0], pos[-1] + tick_spacing, tick_spacing))
         ax1.spines['right'].set_visible(False)
         ax1.spines['top'].set_visible(False)
+        ax1.spines['left'].set_linewidth(2)
+        ax1.spines['bottom'].set_linewidth(2)
         if group is not None:
             ax1.legend(fontsize=16, loc='upper right')
     else:
@@ -2622,6 +2754,9 @@ def plot_lineplot_adaptation(df: pd.DataFrame, x: str, y: str,
             ax1.spines[spine].set_visible(False)
         for spine in ["left", "right", "top"]:
             ax2.spines[spine].set_visible(False)
+        ax1.spines['left'].set_linewidth(2)
+        ax1.spines['bottom'].set_linewidth(2)
+        ax2.spines['bottom'].set_linewidth(2)
         
         # Add slanted break marks at corners of Axes
         d = 2  # Proportion of vertical to horizontal extent of the slanted line
@@ -2638,7 +2773,7 @@ def plot_lineplot_adaptation(df: pd.DataFrame, x: str, y: str,
 
     ax1.set_ylabel(y, fontsize=18)
     for ax in [ax1] if no_gap else [ax1, ax2]:
-        ax.tick_params(axis='both', labelsize=16)
+        ax.tick_params(axis='both', labelsize=18, width=2)
         if Yaxis_range is not None:
             ax.set_ylim(Yaxis_range)
 
