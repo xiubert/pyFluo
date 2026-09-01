@@ -13,11 +13,12 @@ seaborn==0.13.2
 # ROI UI
 bokeh==3.6.2
 jupyter_bokeh==4.0.5
-holoviews==1.20.0
+holoviews==1.23.2
 panel==1.5.5
 
 scikit-learn==1.6.0
 scipy==1.14.1
+statsmodels==0.15.0
 
 # ROI UI old
 opencv-python==4.10.0.84
