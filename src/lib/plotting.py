@@ -2331,7 +2331,7 @@ def plot_blurred_respSpatialDFF(freq2dFFresp_calcium: dict, freq2dFFresp_zinc: d
             
             fig.subplots_adjust(wspace=0.3, top=0.85)
             freq_display = freq/1000 if freq > 500 else freq  # Assume freq is in Hz and convert to kHz for title if freq > 500
-            fig.suptitle(f'{freq_display} kHz: Spearman r = {freq2spearman[freq]:.2f}', fontsize=18, fontweight='bold')
+            fig.suptitle(f"{freq_display} kHz: Spearman's r = {freq2spearman[freq]:.3g}", fontsize=18, fontweight='bold')
 
         plt.show()
 
